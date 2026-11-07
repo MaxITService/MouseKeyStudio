@@ -1,0 +1,16 @@
+# GPUI's Window dispatcher owns animation and native interactivity owns clamping.
+# ui::scroll only installs the desktop policy and presents native scrollbars.
+id: gui-wheel-dispatch-owner
+language: rust
+severity: error
+message: Use native GPUI scrolling; ui::scroll::init owns motion policy. Do not add a second wheel handler or per-screen animation.
+files:
+  - crates/openlogi-desktop/src/**/*.rs
+ignores:
+  - crates/openlogi-desktop/src/ui/scroll.rs
+  - '**/tests.rs'
+  - '**/tests/**'
+rule:
+  any:
+    - pattern: $ELEMENT.on_scroll_wheel($$$ARGS)
+    - pattern: $CX.set_scroll_wheel_smoothing($$$ARGS)

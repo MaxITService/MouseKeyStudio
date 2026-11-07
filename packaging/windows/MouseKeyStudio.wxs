@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Independent per-user MSI. GUIDs intentionally differ from upstream OpenLogi. -->
+<?if $(sys.BUILDARCH) = arm64 ?>
+  <?define UpgradeCode = "F75ADADD-B8AC-4E3B-9F9C-CDC84979CF21" ?>
+<?else?>
+  <?define UpgradeCode = "A6C0A57B-5A03-4F52-AE30-7B6FB405C500" ?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Mouse &amp; Key Studio" Manufacturer="Maxim Fomin"
+           Version="$(var.Version)" UpgradeCode="$(var.UpgradeCode)"
+           Language="1033" Scope="perUser" Compressed="yes">
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Mouse &amp; Key Studio is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <UI>
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <DialogRef Id="ErrorDlg" /><DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" /><DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="ProgressDlg" /><DialogRef Id="UserExit" />
+      <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Mouse &amp; Key Studio" />
+      <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+      <Property Id="WixShellExecTarget" Value="[#GuiExe]" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction"
+               Value="Wix4ShellExec_$(sys.BUILDARCHSHORT)"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" Order="1" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+      <ui:WixUI Id="WixUI_Common" />
+    </UI>
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="MouseKeyStudio">
+          <Directory Id="BINFOLDER" Name="bin" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <ComponentGroup Id="App" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable"><File Id="GuiExe" Name="MouseKeyStudio.exe" Source="$(var.ExeFile)" KeyPath="yes" /></Component>
+      <Component Id="AgentExecutable"><File Id="AgentExe" Name="mks-agent.exe" Source="$(var.AgentExeFile)" KeyPath="yes" /></Component>
+      <Component Id="OverlayExecutable"><File Id="OverlayExe" Name="mks-overlay.exe" Source="$(var.OverlayExeFile)" KeyPath="yes" /></Component>
+      <Component Id="Readme"><File Name="README.md" Source="$(var.ProjectRoot)docs/PORTABLE.md" KeyPath="yes" /></Component>
+      <Component Id="MacroGuide"><File Name="MACRO-AGENT-GUIDE.md" Source="$(var.ProjectRoot)docs/MACRO-AGENT-GUIDE.md" KeyPath="yes" /></Component>
+      <Component Id="Origin"><File Name="NAME-AND-ORIGIN.md" Source="$(var.ProjectRoot)docs/NAME-AND-ORIGIN.md" KeyPath="yes" /></Component>
+      <Component Id="LicenseMit"><File Name="LICENSE-MIT" Source="$(var.ProjectRoot)LICENSE-MIT" KeyPath="yes" /></Component>
+      <Component Id="LicenseApache"><File Name="LICENSE-APACHE" Source="$(var.ProjectRoot)LICENSE-APACHE" KeyPath="yes" /></Component>
+      <Component Id="LicenseHidpp"><File Name="LICENSE-hidpp" Source="$(var.ProjectRoot)crates/openlogi-hidpp/LICENSE" KeyPath="yes" /></Component>
+      <Component Id="LicenseGpui"><File Name="LICENSE-gpui" Source="$(var.ProjectRoot)vendor/gpui-pre/LICENSE-APACHE" KeyPath="yes" /></Component>
+      <Component Id="LicenseArtwork"><File Name="LICENSE-plus-artwork" Source="$(var.ProjectRoot)assets/plus/LICENSE" KeyPath="yes" /></Component>
+      <Component Id="ThirdPartyNotices"><File Name="THIRD-PARTY-NOTICES.txt" Source="$(var.NoticesFile)" KeyPath="yes" /></Component>
+    </ComponentGroup>
+    <ComponentGroup Id="Cli" Directory="BINFOLDER">
+      <Component Id="CliExecutable">
+        <File Id="CliExe" Name="mks.exe" Source="$(var.CliExeFile)" KeyPath="yes" />
+        <Environment Id="CliPath" Name="PATH" Value="[BINFOLDER]" Action="set" Part="last" Permanent="no" System="no" />
+      </Component>
+    </ComponentGroup>
+    <!-- Only this distribution's process names; never terminate upstream helpers. -->
+    <util:CloseApplication Id="CloseOverlay" Target="mks-overlay.exe" CloseMessage="no" RebootPrompt="no" Timeout="2" TerminateProcess="0" />
+    <util:CloseApplication Id="CloseAgent" Target="mks-agent.exe" CloseMessage="no" RebootPrompt="no" Timeout="2" TerminateProcess="0" />
+    <util:CloseApplication Id="CloseGui" Target="MouseKeyStudio.exe" CloseMessage="yes" RebootPrompt="no" Timeout="5" TerminateProcess="0" />
+    <util:CloseApplication Id="CloseCli" Target="mks.exe" CloseMessage="no" RebootPrompt="no" Timeout="2" TerminateProcess="0" />
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="AppShortcut" Name="Mouse &amp; Key Studio" Target="[INSTALLFOLDER]MouseKeyStudio.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\MouseKeyStudio" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\MouseKeyStudio"
+                       Name="InstallLocation"
+                       Type="string"
+                       Value="[INSTALLFOLDER]" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Main"><ComponentGroupRef Id="App" /><ComponentGroupRef Id="Cli" /><ComponentRef Id="StartMenuShortcut" /></Feature>
+    <Icon Id="ProductIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/MaxITService/MouseKeyStudio" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/MaxITService/MouseKeyStudio#readme" />
+  </Package>
+</Wix>

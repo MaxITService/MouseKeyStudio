@@ -1,0 +1,827 @@
+//! The action vocabulary a button can bind to, plus workflow and macro steps.
+
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use super::application_target::ApplicationTarget;
+use super::category::Category;
+use super::key_combo::{KeyCombo, KeyComboParseError, KeyboardUsage};
+
+/// What pressing a [`ButtonId`](crate::binding::ButtonId) should do.
+///
+/// Serialization uses serde's default external tagging: unit variants
+/// serialize as a bare string (`"BrowserBack"`) and the tuple variant
+/// serializes as a single-key table (`{ CustomShortcut = "my chord" }`).
+///
+/// **Stability contract:** existing variant *names* are frozen — they form the
+/// on-disk `config.toml` schema. New variants may be appended freely; removing
+/// or renaming a variant requires a `schema_version` bump and a migration.
+///
+/// This type is pure config data: OS-level event synthesis for each variant
+/// lives in the `openlogi-inject` crate (`openlogi_inject::execute`), keeping
+/// this crate platform- and IO-free.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Action {
+    // ── System ───────────────────────────────────────────────────────────────
+    /// Suppress the input entirely — the button or wheel direction is captured
+    /// but no OS event is synthesised, so the physical input does nothing.
+    None,
+
+    // ── Mouse ────────────────────────────────────────────────────────────────
+    /// Primary mouse button.
+    LeftClick,
+    /// Secondary mouse button.
+    RightClick,
+    /// Middle mouse button (wheel click).
+    MiddleClick,
+    /// Mouse "back" side button (extra button 4). Synthesizes the real mouse
+    /// button event, which browsers and most apps interpret as "navigate back"
+    /// natively — unlike [`Action::BrowserBack`], which sends ⌘[ and is ignored
+    /// by many apps.
+    MouseBack,
+    /// Mouse "forward" side button (extra button 5). Native counterpart to
+    /// [`Action::MouseBack`]; see [`Action::BrowserForward`] for the ⌘] form.
+    MouseForward,
+
+    // ── Editing ──────────────────────────────────────────────────────────────
+    /// Copy the current selection (⌘C / Ctrl+C).
+    Copy,
+    /// Paste from the clipboard (⌘V / Ctrl+V).
+    Paste,
+    /// Cut the current selection (⌘X / Ctrl+X).
+    Cut,
+    /// Undo the last action (⌘Z / Ctrl+Z).
+    Undo,
+    /// Redo the last undone action (⌘⇧Z on macOS / Ctrl+Shift+Z on Linux).
+    ///
+    /// Note: Ctrl+Y is the dominant redo shortcut in LibreOffice and many GTK
+    /// apps. Ctrl+Shift+Z is used here because it mirrors the macOS convention
+    /// and works in GNOME text fields, browsers, and Electron apps. If Ctrl+Y
+    /// coverage is needed, a `CustomShortcut` binding is the escape hatch.
+    Redo,
+    /// Select all content (⌘A / Ctrl+A).
+    SelectAll,
+    /// Open the find / search bar (⌘F / Ctrl+F).
+    Find,
+    /// Save the current document (⌘S / Ctrl+S).
+    Save,
+
+    // ── Browser / Navigation ──────────────────────────────────────────────────
+    /// Navigate backward in browser history.
+    BrowserBack,
+    /// Navigate forward in browser history.
+    BrowserForward,
+    /// Open a new tab (⌘T / Ctrl+T).
+    NewTab,
+    /// Close the current tab (⌘W / Ctrl+W).
+    CloseTab,
+    /// Reopen the last closed tab (⌘⇧T / Ctrl+Shift+T).
+    ReopenTab,
+    /// Switch to the next tab (⌃⇥ / Ctrl+Tab).
+    NextTab,
+    /// Switch to the previous tab (⌃⇧⇥ / Ctrl+Shift+Tab).
+    PrevTab,
+    /// Reload the current page (⌘R / Ctrl+R).
+    ReloadPage,
+
+    // ── Navigation / Window ───────────────────────────────────────────────────
+    /// macOS Mission Control (⌃↑).
+    MissionControl,
+    /// macOS App Exposé — all windows for the current app (⌃↓).
+    AppExpose,
+    /// Switch to the previous desktop / Space.
+    PreviousDesktop,
+    /// Switch to the next desktop / Space.
+    NextDesktop,
+    /// Show the desktop (hide all windows).
+    ShowDesktop,
+    /// Open Launchpad.
+    LaunchpadShow,
+
+    // ── System ────────────────────────────────────────────────────────────────
+    /// Lock the screen (⌘⌃Q on macOS).
+    ///
+    /// On Linux, calls `org.freedesktop.login1.Manager.LockSession($XDG_SESSION_ID)`
+    /// on the system bus (current session only). Falls back to Super+L when
+    /// `$XDG_SESSION_ID` is unset or on non-systemd systems.
+    LockScreen,
+    /// Capture a screenshot.
+    Screenshot,
+    /// Capture a selected screen region to the clipboard.
+    ///
+    /// macOS uses Cmd+Shift+Ctrl+4; Windows uses Win+Shift+S. Linux delegates
+    /// to the desktop environment's screenshot handler via Print Screen.
+    CaptureRegion,
+
+    // ── Media ────────────────────────────────────────────────────────────────
+    /// Toggle media play/pause.
+    PlayPause,
+    /// Skip to the next track.
+    NextTrack,
+    /// Go back to the previous track.
+    PrevTrack,
+    /// Increase system volume.
+    VolumeUp,
+    /// Decrease system volume.
+    VolumeDown,
+    /// Toggle system mute.
+    MuteVolume,
+
+    // ── DPI ──────────────────────────────────────────────────────────────────
+    /// Step through the configured DPI preset list (P1.7).
+    CycleDpiPresets,
+    /// Jump to a specific zero-based preset in the device's DPI preset list.
+    /// Out-of-range indices clamp to the list length at fire time (P1.7).
+    SetDpiPreset(u8),
+    /// Toggle the HID++ SmartShift ratchet/free-spin wheel mode (P1.1).
+    ToggleSmartShift,
+
+    // ── Scroll ───────────────────────────────────────────────────────────────
+    /// Synthesise a vertical scroll-up tick.
+    ScrollUp,
+    /// Synthesise a vertical scroll-down tick.
+    ScrollDown,
+    /// Synthesise a horizontal scroll-left tick.
+    HorizontalScrollLeft,
+    /// Synthesise a horizontal scroll-right tick.
+    HorizontalScrollRight,
+
+    // ── Custom ───────────────────────────────────────────────────────────────
+    /// Replay an arbitrary recorded key chord (P1.3).
+    ///
+    /// Holds the structured chord data so `openlogi_inject::execute` can post the
+    /// real keystroke (macOS: CGEventPost with the encoded modifier flags).
+    /// The `display` field is used by [`Action::label`] so the popover
+    /// shows the user-friendly chord name.
+    CustomShortcut(KeyCombo),
+
+    // ── System (appended) ────────────────────────────────────────────────────
+    /// Put the computer to sleep. Appended after `CustomShortcut` because the
+    /// serde variant index is the wire format (see the stability contract
+    /// above) — new variants only ever go at the end.
+    Sleep,
+    /// Type an arbitrary string by emitting unicode characters (macOS
+    /// `CGEventKeyboardSetUnicodeString`). Used for macro text. Power-user
+    /// escape hatch — excluded from the default catalog.
+    TypeText(String),
+    /// Run an AppleScript via `osascript -e <source>`. Power-user escape hatch.
+    RunAppleScript(String),
+    /// Run a shell command via CMD on Windows or `/bin/sh -c` elsewhere.
+    /// Existing commands keep this shell when PowerShell is offered in the UI.
+    RunShellCommand(String),
+    /// Run a timed, ordered sequence of steps — the native, no-code version of
+    /// "type 'bite me', wait 5s, press Enter, wait 5s, type more, Escape". Each
+    /// step is one of the power-user actions or a `Delay`. The sequencer
+    /// (`openlogi-inject`) runs them in order, awaiting `Delay`s. Power-user
+    /// escape hatch — excluded from the default catalog.
+    Workflow(Vec<WorkflowStep>),
+    /// Open the configured Actions Ring at the current pointer position.
+    /// The agent handles the ring session rather than the OS injector.
+    ShowActionsRing,
+    /// Open an application, folder, filesystem path, or platform URL.
+    OpenApplication(ApplicationTarget),
+    /// Hold an arbitrary recorded key chord for the lifetime of its physical
+    /// button press. This is the push-to-talk counterpart to
+    /// [`Action::CustomShortcut`], which emits an immediate down/up pair.
+    ///
+    /// Lifecycle-aware runtimes emit the chord's down edge when the press
+    /// starts and its up edge for every terminal outcome, including capture
+    /// cancellation and shutdown. Dispatchers without a release context must
+    /// degrade this action to a balanced tap rather than leave keys held.
+    HoldShortcut(KeyCombo),
+    /// Hold the chord's modifiers for the lifetime of the physical press while
+    /// tapping its ordinary key exactly once, the way a hand does on a
+    /// keyboard.
+    ///
+    /// This is the shape an application switcher needs. Cmd+Tab steps one
+    /// window forward and leaves the switcher on screen for as long as Cmd is
+    /// down. Neither existing variant can express it:
+    /// [`Action::CustomShortcut`] releases Cmd immediately, so the switcher
+    /// closes again at once, and [`Action::HoldShortcut`] holds Tab down too,
+    /// so key repeat walks the switcher to its last window and parks there.
+    ///
+    /// Lifecycle-aware runtimes emit the modifier down edges plus one tap of
+    /// the ordinary key when the press starts, and the modifier up edges for
+    /// every terminal outcome. The tap is skipped while another held chord
+    /// keeps that same key down, so the other hold is never released early.
+    /// Dispatchers without a release context degrade
+    /// this to a balanced tap of the whole chord, exactly as they do for
+    /// [`Action::HoldShortcut`].
+    TapKeyHoldingModifiers(KeyCombo),
+    /// Turn precision mode on or off, as the precision button of an MX Ergo
+    /// does in Logi Options+: on, the mouse moves at its slowest speed; off,
+    /// it returns to its saved speed. On a mouse whose speed HID++ `0x2205`
+    /// scales
+    /// ([`Capabilities::pointer_scaling`](crate::device::Capabilities::pointer_scaling))
+    /// the slowest speed is the slowest
+    /// [`PointerSpeed`](crate::hid::PointerSpeed), and with none saved the
+    /// mouse returns to 1×. On a mouse with adjustable DPI
+    /// ([`Capabilities::pointer`](crate::device::Capabilities::pointer)) it
+    /// is the lowest DPI the sensor lists, and with none saved the mouse
+    /// returns to the sensor's default DPI. A DPI LED (HID++ `0x1300`) is
+    /// lit while the mode is on. Does nothing on other devices.
+    TogglePrecisionMode,
+    /// Next DPI preset, without wrapping.
+    NextDpiPreset,
+    /// Previous DPI preset, without wrapping.
+    PreviousDpiPreset,
+    /// Lowest DPI preset while held.
+    DpiShift,
+    /// G-Shift bindings for the other buttons while held.
+    GShift,
+    /// Move the pressing keypad to its previous binding page, wrapping from
+    /// page 1 to the last. The agent owns the keypad's current page; on any
+    /// other device this does nothing. Appended — variant order is wire format.
+    PreviousKeypadPage,
+    /// Move the pressing keypad to its next binding page, wrapping from the
+    /// last page to page 1. Appended — variant order is wire format.
+    NextKeypadPage,
+    /// Run a multi-phase key-event and delay macro with optional hold repeat
+    /// and release steps. Appended — variant order is wire format.
+    Macro(Box<Macro>),
+    /// Run Windows PowerShell directly with no user profile. Appended because
+    /// variant order is wire format. Other platforms warn without executing.
+    RunPowerShellCommand(String),
+}
+
+/// Which of a held chord's keys stay down for the lifetime of the press.
+///
+/// Both shapes hold the chord's modifiers; they differ in the ordinary key.
+/// See [`Action::held_chord`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldKeys {
+    /// Modifiers and ordinary key alike stay down
+    /// ([`Action::HoldShortcut`]).
+    WholeChord,
+    /// The modifiers stay down and the ordinary key is tapped once as the
+    /// hold starts, unless another hold already keeps that key down
+    /// ([`Action::TapKeyHoldingModifiers`]).
+    ModifiersOnly,
+}
+
+/// One step in a [`Action::Workflow`]. A workflow is a `Vec<WorkflowStep>`
+/// executed in order by the inject layer; `Delay` introduces a pause between
+/// the surrounding steps.
+///
+/// `PressKey` reuses [`KeyCombo`] (the same model as [`Action::CustomShortcut`])
+/// so a step can press a key chord. The other variants mirror their standalone
+/// [`Action`] counterparts.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WorkflowStep {
+    /// Type a unicode string (see [`Action::TypeText`]).
+    TypeText(String),
+    /// Press a key chord (see [`Action::CustomShortcut`] / [`KeyCombo`]).
+    PressKey(KeyCombo),
+    /// Wait `millis` milliseconds before the next step.
+    Delay {
+        /// Pause length in milliseconds.
+        millis: u64,
+    },
+    /// Run an AppleScript (see [`Action::RunAppleScript`]).
+    RunAppleScript(String),
+    /// Run a shell command (see [`Action::RunShellCommand`]).
+    RunShellCommand(String),
+}
+
+/// A named multi-phase key-event and delay macro.
+///
+/// Matches the three-phase G HUB macro model:
+/// - `on_press` runs once when the button is pressed,
+/// - `while_held` runs while the button stays down (once or repeating when
+///   `repeat_while_held` is set),
+/// - `on_release` runs once when the button is released.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Macro {
+    /// User-facing macro name.
+    #[serde(default)]
+    pub name: String,
+    /// Steps executed when the bound control is pressed.
+    #[serde(default)]
+    pub on_press: Vec<MacroStep>,
+    /// Steps executed while the bound control remains held.
+    #[serde(default)]
+    pub while_held: Vec<MacroStep>,
+    /// Steps executed when the bound control is released.
+    #[serde(default)]
+    pub on_release: Vec<MacroStep>,
+    /// Whether `while_held` loops continuously until release or runs once.
+    #[serde(default)]
+    pub repeat_while_held: bool,
+}
+
+impl Macro {
+    /// Trimmed user-facing name, or `None` when unnamed.
+    #[must_use]
+    pub fn display_name(&self) -> Option<&str> {
+        let trimmed = self.name.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
+    /// Total number of steps across all three phases.
+    #[must_use]
+    pub fn step_count(&self) -> usize {
+        self.on_press.len() + self.while_held.len() + self.on_release.len()
+    }
+
+    /// Whether all three macro phases are empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.on_press.is_empty() && self.while_held.is_empty() && self.on_release.is_empty()
+    }
+
+    /// Whether this macro has a hold or release phase that depends on the
+    /// physical button release edge.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        !self.while_held.is_empty() || !self.on_release.is_empty()
+    }
+}
+
+/// One atomic step in a [`Macro`] phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MacroStep {
+    /// Press and hold a keyboard key usage until a matching [`Self::KeyUp`].
+    KeyDown(KeyboardUsage),
+    /// Release a previously pressed keyboard key usage.
+    KeyUp(KeyboardUsage),
+    /// Pause execution for `millis` milliseconds.
+    Delay {
+        /// Pause length in milliseconds.
+        millis: u64,
+    },
+}
+
+/// Why a textual macro step or sequence could not be parsed.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum MacroStepParseError {
+    /// The step text was empty.
+    #[error("macro step must not be empty")]
+    Empty,
+    /// A key name in a down/up step was not recognized.
+    #[error(transparent)]
+    InvalidKey(#[from] KeyComboParseError),
+    /// A delay step had a non-numeric millisecond value.
+    #[error("invalid macro delay: {0}")]
+    InvalidDelay(String),
+    /// A step token did not match `+Key`, `-Key`, or `<millis>ms`.
+    #[error("unsupported macro step: {0}")]
+    UnknownStep(String),
+}
+
+impl fmt::Display for MacroStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::KeyDown(key) => write!(f, "+{key}"),
+            Self::KeyUp(key) => write!(f, "-{key}"),
+            Self::Delay { millis } => write!(f, "{millis}ms"),
+        }
+    }
+}
+
+impl FromStr for MacroStep {
+    type Err = MacroStepParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let token = input.trim();
+        if token.is_empty() {
+            return Err(MacroStepParseError::Empty);
+        }
+        if let Some(millis) = parse_delay_token(token)? {
+            return Ok(Self::Delay { millis });
+        }
+        if token.len() > 1 {
+            if let Some(rest) = token.strip_prefix('+').or_else(|| token.strip_prefix('↓')) {
+                return Ok(Self::KeyDown(rest.trim().parse()?));
+            }
+            if let Some(rest) = token.strip_prefix('-').or_else(|| token.strip_prefix('↑')) {
+                return Ok(Self::KeyUp(rest.trim().parse()?));
+            }
+            if let Some(rest) = token.strip_suffix('↓') {
+                return Ok(Self::KeyDown(rest.trim().parse()?));
+            }
+            if let Some(rest) = token.strip_suffix('↑') {
+                return Ok(Self::KeyUp(rest.trim().parse()?));
+            }
+        }
+        if let Some((prefix, rest)) = token.split_once(char::is_whitespace) {
+            let rest = rest.trim();
+            match prefix.to_ascii_lowercase().as_str() {
+                "down" | "keydown" | "key_down" | "press" => {
+                    return Ok(Self::KeyDown(rest.parse()?));
+                }
+                "up" | "keyup" | "key_up" | "release" => {
+                    return Ok(Self::KeyUp(rest.parse()?));
+                }
+                _ => {}
+            }
+            if let Some((key_part, suffix)) = token.rsplit_once(char::is_whitespace) {
+                match suffix.trim().to_ascii_lowercase().as_str() {
+                    "down" => return Ok(Self::KeyDown(key_part.trim().parse()?)),
+                    "up" => return Ok(Self::KeyUp(key_part.trim().parse()?)),
+                    _ => {}
+                }
+            }
+        }
+        if let Some((left, right)) = token.split_once(':') {
+            let left_lower = left.trim().to_ascii_lowercase();
+            let right_lower = right.trim().to_ascii_lowercase();
+            match left_lower.as_str() {
+                "down" | "keydown" | "key_down" | "press" => {
+                    return Ok(Self::KeyDown(right.trim().parse()?));
+                }
+                "up" | "keyup" | "key_up" | "release" => {
+                    return Ok(Self::KeyUp(right.trim().parse()?));
+                }
+                _ => {}
+            }
+            match right_lower.as_str() {
+                "down" => return Ok(Self::KeyDown(left.trim().parse()?)),
+                "up" => return Ok(Self::KeyUp(left.trim().parse()?)),
+                _ => {}
+            }
+        }
+        Err(MacroStepParseError::UnknownStep(token.to_string()))
+    }
+}
+
+fn parse_delay_token(token: &str) -> Result<Option<u64>, MacroStepParseError> {
+    let lower = token.to_ascii_lowercase();
+    if let Some(rest) = lower
+        .strip_prefix("delay")
+        .or_else(|| lower.strip_prefix("wait"))
+        .or_else(|| lower.strip_prefix("sleep"))
+    {
+        let rest = rest.trim();
+        let rest = rest.strip_prefix(':').map_or(rest, str::trim);
+        if rest.is_empty() {
+            return Err(MacroStepParseError::InvalidDelay(token.to_string()));
+        }
+        let number = rest.strip_suffix("ms").map_or(rest, str::trim);
+        let millis = number
+            .parse::<u64>()
+            .map_err(|_| MacroStepParseError::InvalidDelay(token.to_string()))?;
+        return Ok(Some(millis));
+    }
+    if let Some(number) = lower.strip_suffix("ms") {
+        let number = number.trim();
+        if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+            let millis = number
+                .parse::<u64>()
+                .map_err(|_| MacroStepParseError::InvalidDelay(token.to_string()))?;
+            return Ok(Some(millis));
+        }
+        return Err(MacroStepParseError::InvalidDelay(token.to_string()));
+    }
+    Ok(None)
+}
+
+impl MacroStep {
+    /// Parse a comma-, semicolon-, newline-, or whitespace-separated sequence
+    /// of macro steps.
+    ///
+    /// Supports explicit steps (`+RightCtrl`, `-RightCtrl`, `50ms`,
+    /// `down RightCtrl`, `up RightCtrl`, `delay 50ms`) as well as bare key
+    /// names or `tap <Key>` tokens, which expand into a balanced
+    /// `[KeyDown(key), KeyUp(key)]` pair.
+    pub fn parse_sequence(input: &str) -> Result<Vec<Self>, MacroStepParseError> {
+        Self::parse_sequence_detailed(input).map_err(|error| error.source)
+    }
+
+    /// Parse a sequence, retaining the failing step's one-based position and text.
+    pub fn parse_sequence_detailed(input: &str) -> Result<Vec<Self>, MacroSequenceParseError> {
+        let mut steps = Vec::new();
+        for segment in input.split([',', ';', '\n']) {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+            let segment_err = match segment.parse::<Self>() {
+                Ok(step) => {
+                    steps.push(step);
+                    continue;
+                }
+                Err(err) => err,
+            };
+            if let Some((prefix, rest)) = segment.split_once(char::is_whitespace)
+                && prefix.eq_ignore_ascii_case("tap")
+            {
+                let key: KeyboardUsage =
+                    rest.trim()
+                        .parse()
+                        .map_err(|source| MacroSequenceParseError {
+                            step: steps.len() + 1,
+                            token: segment.to_owned(),
+                            source: MacroStepParseError::InvalidKey(source),
+                        })?;
+                steps.push(Self::KeyDown(key));
+                steps.push(Self::KeyUp(key));
+                continue;
+            }
+            if !segment.contains(char::is_whitespace) {
+                if let Ok(key) = segment.parse::<KeyboardUsage>() {
+                    steps.push(Self::KeyDown(key));
+                    steps.push(Self::KeyUp(key));
+                    continue;
+                }
+                return Err(MacroSequenceParseError {
+                    step: steps.len() + 1,
+                    token: segment.to_owned(),
+                    source: segment_err,
+                });
+            }
+            for word in segment.split_whitespace() {
+                match word.parse::<Self>() {
+                    Ok(step) => steps.push(step),
+                    Err(err) => {
+                        if let Ok(key) = word.parse::<KeyboardUsage>() {
+                            steps.push(Self::KeyDown(key));
+                            steps.push(Self::KeyUp(key));
+                        } else {
+                            return Err(MacroSequenceParseError {
+                                step: steps.len() + 1,
+                                token: word.to_owned(),
+                                source: err,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(steps)
+    }
+
+    /// Render a slice of steps into canonical comma-separated sequence text.
+    #[must_use]
+    pub fn format_sequence(steps: &[Self]) -> String {
+        steps
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A sequence error with the text and position of the first invalid step.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("step {step} ({token}): {source}")]
+pub struct MacroSequenceParseError {
+    step: usize,
+    token: String,
+    #[source]
+    source: MacroStepParseError,
+}
+
+impl MacroSequenceParseError {
+    /// One-based position among expanded key edges and delays.
+    #[must_use]
+    pub const fn step(&self) -> usize {
+        self.step
+    }
+
+    /// The invalid token as entered by the user.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+/// X-macro table of every payload-free [`Action`] variant.
+///
+/// Each row is `Variant "Label" "i18n.key" Category Icon`, optionally followed
+/// by `not_pickable` for a row [`Action::catalog`] must omit. This is the single
+/// place a plain action is declared; payload-carrying variants (`SetDpiPreset`,
+/// `CustomShortcut`, …) build their label/category/icon from their payload and
+/// keep hand-written arms alongside the generated ones instead.
+///
+/// `macro_rules!` can only emit items into the module it is invoked from, so
+/// this table doesn't generate code itself — it forwards its rows verbatim to
+/// a `$callback!` macro chosen by the caller. `action.rs` (below) uses it to
+/// derive [`Action::label`], [`Action::category`], and [`Action::catalog`];
+/// `action_ring::icon` uses it to derive [`ActionRingIcon::for_action`](
+/// super::action_ring::ActionRingIcon::for_action). Row order is
+/// [`Action::catalog`]'s output order, grouped by category to match the
+/// popover section layout — edit rows here only, never in a callback's match.
+macro_rules! for_each_unit_action {
+    ($callback:ident) => {
+        $callback! {
+            // Mouse
+            LeftClick "Left Click" "actions.left_click" Mouse Pointer,
+            RightClick "Right Click" "actions.right_click" Mouse Pointer,
+            MiddleClick "Middle Click" "actions.middle_click" Mouse Mouse,
+            MouseBack "Back (Button 4)" "actions.back_button_4" Mouse MouseBack,
+            MouseForward "Forward (Button 5)" "actions.forward_button_5" Mouse MouseForward,
+            GShift "G-Shift (Hold)" "actions.g_shift_hold" Mouse Layers not_pickable,
+            // Editing
+            Copy "Copy" "common.copy" Editing Copy,
+            Paste "Paste" "common.paste" Editing Paste,
+            Cut "Cut" "common.cut" Editing Cut,
+            Undo "Undo" "common.undo" Editing Undo,
+            Redo "Redo" "common.redo" Editing Redo,
+            SelectAll "Select All" "common.select_all" Editing SelectAll,
+            Find "Find" "actions.find" Editing Search,
+            Save "Save" "common.save" Editing Save,
+            // Browser
+            BrowserBack "Browser Back" "actions.browser_back" Browser ArrowLeft,
+            BrowserForward "Browser Forward" "actions.browser_forward" Browser ArrowRight,
+            NewTab "New Tab" "actions.new_tab" Browser NewTab,
+            CloseTab "Close Tab" "actions.close_tab" Browser CloseTab,
+            ReopenTab "Reopen Tab" "actions.reopen_tab" Browser ReopenTab,
+            NextTab "Next Tab" "actions.next_tab" Browser NextTab,
+            PrevTab "Previous Tab" "actions.previous_tab" Browser PreviousTab,
+            ReloadPage "Reload Page" "actions.reload_page" Browser Reload,
+            // Navigation
+            MissionControl "Mission Control" "actions.mission_control" Navigation Grid,
+            AppExpose "App Exposé" "actions.app_expose" Navigation Layers,
+            PreviousDesktop "Previous Desktop" "actions.previous_desktop" Navigation PreviousDesktop,
+            NextDesktop "Next Desktop" "actions.next_desktop" Navigation NextDesktop,
+            ShowDesktop "Show Desktop" "actions.show_desktop" Navigation Monitor,
+            LaunchpadShow "Launchpad" "actions.launchpad" Navigation Applications,
+            // System
+            None "Do Nothing" "pointer.do_nothing" System Ban,
+            LockScreen "Lock Screen" "actions.lock_screen" System Lock,
+            Screenshot "Screenshot" "actions.screenshot" System Camera,
+            CaptureRegion "Capture Region" "actions.capture_region" System Camera,
+            Sleep "Sleep" "actions.sleep" System Monitor,
+            ShowActionsRing "Actions Ring" "action_ring.actions_ring" System Grid,
+            PreviousKeypadPage "Previous Keypad Page" "actions.previous_keypad_page" System PreviousTab,
+            NextKeypadPage "Next Keypad Page" "actions.next_keypad_page" System NextTab,
+            // Media
+            PlayPause "Play / Pause" "actions.play_pause" Media Play,
+            NextTrack "Next Track" "actions.next_track" Media NextTrack,
+            PrevTrack "Previous Track" "actions.previous_track" Media PreviousTrack,
+            VolumeUp "Volume Up" "actions.volume_up" Media Volume,
+            VolumeDown "Volume Down" "actions.volume_down" Media VolumeDown,
+            MuteVolume "Mute" "actions.mute" Media Mute,
+            // DPI
+            CycleDpiPresets "Cycle DPI Presets" "pointer.cycle_dpi_presets" Dpi Gauge,
+            NextDpiPreset "Next DPI Preset" "pointer.next_dpi_preset" Dpi ArrowUp,
+            PreviousDpiPreset "Previous DPI Preset" "pointer.previous_dpi_preset" Dpi ArrowDown,
+            DpiShift "DPI Shift (Hold)" "pointer.dpi_shift" Dpi Gauge not_pickable,
+            ToggleSmartShift "Toggle SmartShift" "pointer.toggle_smartshift" Dpi Refresh,
+            TogglePrecisionMode "Precision Mode" "pointer.precision_mode" Dpi Gauge,
+            // Scroll
+            ScrollUp "Scroll Up" "actions.scroll_up" Scroll ArrowUp,
+            ScrollDown "Scroll Down" "actions.scroll_down" Scroll ArrowDown,
+            HorizontalScrollLeft "Scroll Left" "actions.scroll_left" Scroll ScrollLeft,
+            HorizontalScrollRight "Scroll Right" "actions.scroll_right" Scroll ScrollRight,
+        }
+    };
+}
+pub(super) use for_each_unit_action;
+
+/// Builds `label`, `translation_key`, `category`, and `catalog` from
+/// [`for_each_unit_action!`]'s rows, splicing in the hand-written arms for
+/// payload-carrying variants so each generated `match` still covers every
+/// [`Action`] variant exhaustively.
+macro_rules! derive_action_core {
+    ( $( $variant:ident $label:literal $translation_key:literal $category:ident $icon:ident $( $tag:ident )? ),* $(,)? ) => {
+        impl Action {
+            /// Display label for the popover row.
+            ///
+            /// Returns `String` rather than `&str` so parameterized variants (e.g.
+            /// `SetDpiPreset(i)`, `CustomShortcut(s)`) can build a label that
+            /// includes their payload.
+            #[must_use]
+            pub fn label(&self) -> String {
+                match self {
+                    $( Action::$variant => $label.into(), )*
+                    Action::SetDpiPreset(i) => format!("DPI Preset {}", i + 1),
+                    Action::CustomShortcut(combo) => combo.rendered_label(),
+                    Action::TypeText(s) => format!("Type \"{s}\""),
+                    Action::RunAppleScript(_) => "Run AppleScript".into(),
+                    Action::RunShellCommand(_) => "Run Command".into(),
+                    Action::RunPowerShellCommand(_) => "Run PowerShell".into(),
+                    Action::Workflow(steps) => format!("Workflow ({} steps)", steps.len()),
+                    Action::OpenApplication(target) => format!("Open {}", target.display_name()),
+                    Action::HoldShortcut(combo) => format!("Hold {}", combo.rendered_label()),
+                    Action::TapKeyHoldingModifiers(combo) => match combo.rendered_modifiers() {
+                        Some(modifiers) => {
+                            format!("Hold {modifiers}, tap {}", combo.rendered_key())
+                        }
+                        None => format!("Tap {}", combo.rendered_key()),
+                    },
+                    Action::Macro(sequence) => match sequence.display_name() {
+                        Some(name) => format!("Macro: {name}"),
+                        None => format!("Macro ({} steps)", sequence.step_count()),
+                    },
+                }
+            }
+
+            /// Stable catalog key for a payload-free action label.
+            ///
+            /// Payload-carrying actions return `None`: their display text needs
+            /// interpolation or contains user data and cannot be represented by
+            /// a key alone.
+            #[must_use]
+            pub fn translation_key(&self) -> Option<&'static str> {
+                match self {
+                    $( Action::$variant => Some($translation_key), )*
+                    Action::SetDpiPreset(_)
+                    | Action::CustomShortcut(_)
+                    | Action::TypeText(_)
+                    | Action::RunAppleScript(_)
+                    | Action::RunShellCommand(_)
+                    | Action::RunPowerShellCommand(_)
+                    | Action::Workflow(_)
+                    | Action::OpenApplication(_)
+                    | Action::HoldShortcut(_)
+                    | Action::TapKeyHoldingModifiers(_)
+                    | Action::Macro(_) => None,
+                }
+            }
+
+            /// Resolve the stable key for a payload-free English action label.
+            ///
+            /// The Actions Ring wire contract carries this English label for
+            /// compatibility with older helpers. The overlay converts it at
+            /// the localization boundary rather than changing the wire value.
+            #[must_use]
+            pub fn translation_key_for_label(label: &str) -> Option<&'static str> {
+                match label {
+                    $( $label => Some($translation_key), )*
+                    _ => None,
+                }
+            }
+
+            /// Which [`Category`] this action belongs to, used for popover grouping.
+            #[must_use]
+            pub fn category(&self) -> Category {
+                match self {
+                    $( Action::$variant => Category::$category, )*
+                    // CustomShortcut is assigned to Editing so it doesn't need a
+                    // separate arm (it's not in the picker catalog).
+                    Action::CustomShortcut(_)
+                    | Action::TypeText(_)
+                    | Action::RunAppleScript(_)
+                    | Action::RunShellCommand(_)
+                    | Action::RunPowerShellCommand(_)
+                    | Action::Workflow(_)
+                    | Action::HoldShortcut(_)
+                    | Action::TapKeyHoldingModifiers(_)
+                    | Action::Macro(_) => Category::Editing,
+                    Action::SetDpiPreset(_) => Category::Dpi,
+                    Action::OpenApplication(_) => Category::System,
+                }
+            }
+
+            /// All pickable actions in a deterministic order.
+            ///
+            /// [`Action::CustomShortcut`] is intentionally excluded — it is opened via
+            /// "Record shortcut…" (P1.3), not selected from the catalog. Table rows
+            /// tagged `not_pickable` are excluded from the catalog the same way.
+            #[must_use]
+            pub fn catalog() -> Vec<Action> {
+                [ $( derive_action_core!(@item $variant $( $tag )?) ),* ]
+                    .into_iter()
+                    .flatten()
+                    .filter(Action::is_available)
+                    .collect()
+            }
+        }
+    };
+    (@item $variant:ident) => {
+        Some(Action::$variant)
+    };
+    (@item $variant:ident not_pickable) => {
+        None
+    };
+}
+
+for_each_unit_action!(derive_action_core);
+
+impl Action {
+    /// Whether this host implements the action. Unsupported saved actions stay
+    /// readable, but action pickers must not offer new assignments for them.
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        match self {
+            Self::RunAppleScript(_) => cfg!(target_os = "macos"),
+            Self::TypeText(_) | Self::Sleep => !cfg!(target_os = "windows"),
+            _ => true,
+        }
+    }
+
+    /// The chord whose output must remain down until the originating press
+    /// ends, together with which of its keys stay down. `None` for an
+    /// instantaneous action.
+    #[must_use]
+    pub fn held_chord(&self) -> Option<(&KeyCombo, HeldKeys)> {
+        match self {
+            Self::HoldShortcut(combo) => Some((combo, HeldKeys::WholeChord)),
+            Self::TapKeyHoldingModifiers(combo) => Some((combo, HeldKeys::ModifiersOnly)),
+            _ => None,
+        }
+    }
+
+    /// Whether the action lasts as long as its press. Only a source that
+    /// delivers both edges can run it, so the catalog leaves these out.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        self.held_chord().is_some()
+            || matches!(self, Self::DpiShift | Self::GShift)
+            || matches!(self, Self::Macro(sequence) if sequence.is_held())
+    }
+}

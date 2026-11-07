@@ -1,0 +1,686 @@
+//! Pure HID++ → core-type mappings used by the inventory probe: device kinds
+//! (Bolt and Unifying pairing registers and the `0x0005` marketing type),
+//! battery level/status, and serial-number normalisation. No I/O.
+
+use hidpp::feature::adc_measurement::AdcChargingStatus as HidppAdcChargingStatus;
+use hidpp::feature::battery_status::LegacyBatteryStatus as HidppLegacyBatteryStatus;
+use hidpp::feature::battery_voltage::VoltageChargingStatus as HidppVoltageChargingStatus;
+use hidpp::feature::device_type_and_name::DeviceType as HidppDeviceType;
+use hidpp::feature::unified_battery::{
+    BatteryLevel as HidppBatteryLevel, BatteryStatus as HidppBatteryStatus,
+};
+use hidpp::receiver::bolt::DeviceKind as BoltDeviceKind;
+use hidpp::receiver::unifying::DeviceKind as UnifyingDeviceKind;
+use hidpp::register::battery::{
+    ChargeReading, ChargingState as HidppRegisterChargingState, StatusLevel as HidppStatusLevel,
+    StatusReading,
+};
+use openlogi_core::device::{BatteryInfo, BatteryLevel, BatteryStatus, DeviceKind};
+use openlogi_device_registry::keypad::find_keypad;
+
+/// Trim NUL padding and whitespace from a `DeviceInformation` serial; an
+/// all-padding serial collapses to `None`.
+pub(crate) fn normalize_serial_number(serial: &str) -> Option<String> {
+    let serial = serial.trim_matches('\0').trim().to_string();
+    (!serial.is_empty()).then_some(serial)
+}
+
+/// Map a Bolt pairing-register device kind to our [`DeviceKind`].
+pub(crate) fn map_kind(k: BoltDeviceKind) -> DeviceKind {
+    match k {
+        BoltDeviceKind::Keyboard => DeviceKind::Keyboard,
+        BoltDeviceKind::Mouse => DeviceKind::Mouse,
+        BoltDeviceKind::Numpad => DeviceKind::Numpad,
+        BoltDeviceKind::Presenter => DeviceKind::Presenter,
+        BoltDeviceKind::Remote => DeviceKind::Remote,
+        BoltDeviceKind::Trackball => DeviceKind::Trackball,
+        BoltDeviceKind::Touchpad => DeviceKind::Touchpad,
+        BoltDeviceKind::Tablet => DeviceKind::Tablet,
+        BoltDeviceKind::Gamepad => DeviceKind::Gamepad,
+        BoltDeviceKind::Joystick => DeviceKind::Joystick,
+        BoltDeviceKind::Headset => DeviceKind::Headset,
+        _ => DeviceKind::Unknown,
+    }
+}
+
+/// Map a Unifying pairing-register device kind to our [`DeviceKind`].
+pub(crate) fn map_unifying_kind(k: UnifyingDeviceKind) -> DeviceKind {
+    match k {
+        UnifyingDeviceKind::Keyboard => DeviceKind::Keyboard,
+        UnifyingDeviceKind::Mouse => DeviceKind::Mouse,
+        UnifyingDeviceKind::Numpad => DeviceKind::Numpad,
+        UnifyingDeviceKind::Presenter => DeviceKind::Presenter,
+        UnifyingDeviceKind::Remote => DeviceKind::Remote,
+        UnifyingDeviceKind::Trackball => DeviceKind::Trackball,
+        UnifyingDeviceKind::Touchpad => DeviceKind::Touchpad,
+        _ => DeviceKind::Unknown,
+    }
+}
+
+/// Map the HID++ `0x0005` marketing device type to our [`DeviceKind`]. Types we
+/// don't model (receiver, webcam, dock, …) fall back to [`DeviceKind::Unknown`].
+pub(crate) fn map_device_type(ty: HidppDeviceType) -> DeviceKind {
+    match ty {
+        HidppDeviceType::Keyboard => DeviceKind::Keyboard,
+        HidppDeviceType::Numpad => DeviceKind::Numpad,
+        HidppDeviceType::Mouse => DeviceKind::Mouse,
+        HidppDeviceType::Trackpad => DeviceKind::Touchpad,
+        HidppDeviceType::Trackball => DeviceKind::Trackball,
+        HidppDeviceType::Presenter => DeviceKind::Presenter,
+        HidppDeviceType::RemoteControl => DeviceKind::Remote,
+        HidppDeviceType::Headset => DeviceKind::Headset,
+        HidppDeviceType::Joystick => DeviceKind::Joystick,
+        HidppDeviceType::Gamepad => DeviceKind::Gamepad,
+        _ => DeviceKind::Unknown,
+    }
+}
+
+/// First step of the device-kind precedence chain:
+///
+/// > asset registry > **HID++ `0x0005`** > **register**
+///
+/// where *register* is the Bolt pairing register on the receiver path and the
+/// curated identity registry (`direct_identity_kind`) on the direct path. This
+/// folds the two HID++ sources; the GUI applies the final asset-registry
+/// override in `effective_kind` (`crates/openlogi-desktop/src/state/devices.rs`).
+/// Adding a kind source means slotting it into this one chain — and updating
+/// both docs.
+///
+/// `0x0005` is the device's self-reported marketing type and is authoritative;
+/// the Bolt pairing register is a coarser hint that can misreport (e.g. an
+/// MX Anywhere 3S surfacing as `Keyboard`, which strips its button/pointer tabs
+/// — issue #127). We therefore trust `probed` whenever it names a kind we model,
+/// falling back to `register` when the device was offline (no probe → `None`),
+/// didn't answer `0x0005`, or reported a type we don't map (`Unknown`).
+pub(crate) fn resolve_device_kind(probed: Option<DeviceKind>, register: DeviceKind) -> DeviceKind {
+    match probed {
+        Some(kind) if kind != DeviceKind::Unknown => kind,
+        _ => register,
+    }
+}
+
+/// The direct path's register: a per-product kind claim over the identity
+/// registry, for attached devices that answer HID++ but report no usable
+/// `0x0005` type and have no pairing register to fall back on. Without it
+/// such a device classifies `Unknown` and silently leaves the keyboard capture
+/// plane, so its bound keys stay native (the MX Creative Keypad, whose
+/// `DeviceType` is `None`, is why this exists). Unknown products return
+/// `Unknown`, exactly what the direct path passed before this source existed.
+pub(crate) fn direct_identity_kind(vendor_id: u16, product_id: u16) -> DeviceKind {
+    if find_keypad(vendor_id, product_id).is_some() {
+        DeviceKind::Numpad
+    } else {
+        DeviceKind::Unknown
+    }
+}
+
+pub(crate) fn map_battery_level(level: HidppBatteryLevel) -> BatteryLevel {
+    match level {
+        HidppBatteryLevel::Critical => BatteryLevel::Critical,
+        HidppBatteryLevel::Low => BatteryLevel::Low,
+        HidppBatteryLevel::Good => BatteryLevel::Good,
+        HidppBatteryLevel::Full => BatteryLevel::Full,
+        _ => BatteryLevel::Unknown,
+    }
+}
+
+pub(crate) fn map_battery_status(status: HidppBatteryStatus) -> BatteryStatus {
+    match status {
+        HidppBatteryStatus::Discharging => BatteryStatus::Discharging,
+        HidppBatteryStatus::Charging | HidppBatteryStatus::ChargingNearlyFull => {
+            BatteryStatus::Charging
+        }
+        HidppBatteryStatus::ChargingSlow => BatteryStatus::ChargingSlow,
+        HidppBatteryStatus::Full => BatteryStatus::Full,
+        HidppBatteryStatus::InvalidBattery
+        | HidppBatteryStatus::ThermalError
+        | HidppBatteryStatus::ChargingError => BatteryStatus::Error,
+        _ => BatteryStatus::Unknown,
+    }
+}
+
+/// Map a legacy `0x1000` charging status to our [`BatteryStatus`].
+pub(crate) fn map_legacy_battery_status(status: HidppLegacyBatteryStatus) -> BatteryStatus {
+    match status {
+        HidppLegacyBatteryStatus::Discharging => BatteryStatus::Discharging,
+        // The legacy feature splits "charging" into recharging / almost-full;
+        // both are just "charging" to us.
+        HidppLegacyBatteryStatus::Recharging | HidppLegacyBatteryStatus::AlmostFull => {
+            BatteryStatus::Charging
+        }
+        HidppLegacyBatteryStatus::SlowRecharge => BatteryStatus::ChargingSlow,
+        HidppLegacyBatteryStatus::Full => BatteryStatus::Full,
+        HidppLegacyBatteryStatus::InvalidBattery | HidppLegacyBatteryStatus::ThermalError => {
+            BatteryStatus::Error
+        }
+        _ => BatteryStatus::Unknown,
+    }
+}
+
+/// Map a `0x1001` voltage-feature charging status to our [`BatteryStatus`].
+pub(crate) fn map_voltage_battery_status(status: HidppVoltageChargingStatus) -> BatteryStatus {
+    match status {
+        HidppVoltageChargingStatus::Discharging => BatteryStatus::Discharging,
+        // The voltage feature splits "charging" by rate; fast charging is just
+        // "charging" to us, the same folding `0x1000`'s almost-full gets.
+        HidppVoltageChargingStatus::Charging | HidppVoltageChargingStatus::ChargingFast => {
+            BatteryStatus::Charging
+        }
+        HidppVoltageChargingStatus::ChargingSlow => BatteryStatus::ChargingSlow,
+        HidppVoltageChargingStatus::Full => BatteryStatus::Full,
+        // On external power but not charging: the firmware's charge-fault
+        // signal.
+        HidppVoltageChargingStatus::NotCharging => BatteryStatus::Error,
+        _ => BatteryStatus::Unknown,
+    }
+}
+
+/// Map a `0x1F20` ADC-measurement charging status to our [`BatteryStatus`].
+pub(crate) fn map_adc_battery_status(status: HidppAdcChargingStatus) -> BatteryStatus {
+    match status {
+        HidppAdcChargingStatus::Discharging => BatteryStatus::Discharging,
+        HidppAdcChargingStatus::Charging => BatteryStatus::Charging,
+        HidppAdcChargingStatus::Full => BatteryStatus::Full,
+        _ => BatteryStatus::Unknown,
+    }
+}
+
+/// Map a HID++ 1.0 battery register's charging state to our [`BatteryStatus`].
+fn map_register_charging(state: HidppRegisterChargingState) -> BatteryStatus {
+    match state {
+        HidppRegisterChargingState::Discharging => BatteryStatus::Discharging,
+        HidppRegisterChargingState::Recharging => BatteryStatus::Charging,
+        HidppRegisterChargingState::Full => BatteryStatus::Full,
+        _ => BatteryStatus::Unknown,
+    }
+}
+
+/// Map a HID++ 1.0 `0x07` level to our [`BatteryLevel`]. Empty takes our
+/// lowest level, so a nearly dead battery still raises the low-battery cue. A
+/// missing level, which Solaar notes a charging report can carry, is unknown.
+fn map_status_register_level(level: Option<HidppStatusLevel>) -> BatteryLevel {
+    match level {
+        Some(HidppStatusLevel::Full) => BatteryLevel::Full,
+        Some(HidppStatusLevel::Good) => BatteryLevel::Good,
+        Some(HidppStatusLevel::Low) => BatteryLevel::Low,
+        Some(HidppStatusLevel::Critical | HidppStatusLevel::Empty) => BatteryLevel::Critical,
+        _ => BatteryLevel::Unknown,
+    }
+}
+
+/// Build a [`BatteryInfo`] from a HID++ 1.0 `0x07` reading.
+///
+/// The register reports a coarse level and no percentage, the same shape as a
+/// `0x1004` battery without state of charge, so the reading has none either.
+/// Charge complete reads [`BatteryLevel::Full`] whatever level the register
+/// sent alongside it.
+pub(crate) fn status_register_battery_info(reading: StatusReading) -> BatteryInfo {
+    let status = map_register_charging(reading.charging);
+    let level = if status == BatteryStatus::Full {
+        BatteryLevel::Full
+    } else {
+        map_status_register_level(reading.level)
+    };
+    BatteryInfo {
+        percentage: None,
+        level,
+        status,
+    }
+}
+
+/// Build a [`BatteryInfo`] from a HID++ 1.0 `0x0D` reading, a percentage that
+/// takes the display buckets.
+///
+/// Charge complete reads 100 % / [`BatteryLevel::Full`] whatever charge the
+/// register sent alongside it, as [`legacy_battery_info`] reads it for
+/// `0x1000`.
+pub(crate) fn charge_register_battery_info(reading: ChargeReading) -> BatteryInfo {
+    let status = map_register_charging(reading.charging);
+    let percentage = if status == BatteryStatus::Full {
+        100
+    } else {
+        reading.percentage
+    };
+    BatteryInfo {
+        percentage: Some(percentage),
+        level: legacy_battery_level_from_percentage(percentage),
+        status,
+    }
+}
+
+/// Estimate a charge percentage from a `0x1001` or `0x1F20` battery voltage
+/// reading.
+///
+/// Both features report millivolt, not percent, so the discharge curve is ours
+/// to model. The thresholds and linear interpolation between them are
+/// reverse-engineered, matching Solaar's `estimate_battery_level_percentage`
+/// table for the single-cell Li-Po batteries these devices carry; libratbag
+/// carries an equivalent mapping, and Solaar applies the same table to
+/// `0x1F20`. The Linux kernel's `0x1F20` table reads the same voltage ~15
+/// points higher mid-range; HeadsetControl's G733 calibration sits with
+/// Solaar's.
+pub(crate) fn voltage_battery_percentage(voltage_mv: u16) -> u8 {
+    /// Solaar's measured (millivolt, percent) discharge curve, descending.
+    const CURVE: [(u16, u8); 13] = [
+        (4186, 100),
+        (4067, 90),
+        (3989, 80),
+        (3922, 70),
+        (3859, 60),
+        (3811, 50),
+        (3778, 40),
+        (3751, 30),
+        (3717, 20),
+        (3671, 10),
+        (3646, 5),
+        (3579, 2),
+        (3500, 0),
+    ];
+
+    let (top_mv, top_percent) = CURVE[0];
+    if voltage_mv >= top_mv {
+        return top_percent;
+    }
+    for (&(high_mv, high_percent), &(low_mv, low_percent)) in CURVE.iter().zip(CURVE.iter().skip(1))
+    {
+        if voltage_mv >= low_mv {
+            // Linear interpolation inside the segment, rounded to nearest.
+            let span_mv = u32::from(high_mv - low_mv);
+            let span_percent = u32::from(high_percent - low_percent);
+            let above_low = u32::from(voltage_mv - low_mv);
+            let interpolated =
+                u32::from(low_percent) + (span_percent * above_low + span_mv / 2) / span_mv;
+            return u8::try_from(interpolated).unwrap_or(high_percent);
+        }
+    }
+    // Below the curve's floor: empty.
+    0
+}
+
+/// Build a [`BatteryInfo`] from a legacy `0x1000` reading.
+///
+/// The discharge level is a reading only while the device runs on battery.
+/// In every other state the firmware reports `0`, meaning unknown. That is
+/// how the Linux HID++ driver reads the feature
+/// (`hidpp20_batterylevel_map_status_capacity`), and it sets charge complete
+/// to 100 %. Here charge complete reads 100 % / [`BatteryLevel::Full`]. Any
+/// other off-battery state that reports `0` has no percentage and a
+/// [`BatteryLevel::Unknown`] level: the "charging, no reading" shape a voltage
+/// source gives on a cold start, rather than a critically empty battery.
+///
+/// `mileage` is the device's capability: with it the discharge level is a gauge
+/// reading and takes the display buckets; without it the level is one of four
+/// coarse levels, which [`coarse_legacy_battery_level`] reads back.
+pub(crate) fn legacy_battery_info(
+    discharge_level: u8,
+    status: HidppLegacyBatteryStatus,
+    mileage: bool,
+) -> BatteryInfo {
+    let level_of = if mileage {
+        legacy_battery_level_from_percentage
+    } else {
+        coarse_legacy_battery_level
+    };
+    let status = map_legacy_battery_status(status);
+    let (percentage, level) = match status {
+        BatteryStatus::Full => (Some(100), BatteryLevel::Full),
+        BatteryStatus::Discharging => (Some(discharge_level), level_of(discharge_level)),
+        _ if discharge_level == 0 => (None, BatteryLevel::Unknown),
+        _ => (Some(discharge_level), level_of(discharge_level)),
+    };
+    BatteryInfo {
+        percentage,
+        level,
+        status,
+    }
+}
+
+/// Derive a coarse [`BatteryLevel`] from a discharge percentage. The legacy
+/// `0x1000` feature reports a percentage but, unlike `0x1004`, no level bitmask,
+/// so the bucket is ours to pick.
+///
+/// Fixed display buckets, not device thresholds: a `0x1000` mileage reading
+/// and the voltage estimates come with none. A `0x1000` device without
+/// mileage uses [`coarse_legacy_battery_level`] instead.
+pub(crate) fn legacy_battery_level_from_percentage(percentage: u8) -> BatteryLevel {
+    match percentage {
+        90..=u8::MAX => BatteryLevel::Full,
+        50..=89 => BatteryLevel::Good,
+        20..=49 => BatteryLevel::Low,
+        _ => BatteryLevel::Critical,
+    }
+}
+
+/// Read back the level a legacy `0x1000` device without mileage encodes in its
+/// discharge level.
+///
+/// Such a device reports one of four levels as a percentage. The HID++ 2.0
+/// draft maps `0`–`10` to critical, `11`–`30` to low, `31`–`80` to good and
+/// `81`–`100` to full. The Linux HID++ driver (`hidpp_map_battery_level`)
+/// moves `30` to good, because some devices report `30` on new batteries and
+/// Logitech's Windows software shows it as good. This follows the driver.
+pub(crate) fn coarse_legacy_battery_level(discharge_level: u8) -> BatteryLevel {
+    match discharge_level {
+        0..=10 => BatteryLevel::Critical,
+        11..=29 => BatteryLevel::Low,
+        30..=80 => BatteryLevel::Good,
+        81..=u8::MAX => BatteryLevel::Full,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BatteryInfo, BatteryLevel, BatteryStatus, ChargeReading, DeviceKind,
+        HidppLegacyBatteryStatus, HidppVoltageChargingStatus, StatusReading, UnifyingDeviceKind,
+        charge_register_battery_info, coarse_legacy_battery_level, direct_identity_kind,
+        legacy_battery_info, legacy_battery_level_from_percentage, map_unifying_kind,
+        map_voltage_battery_status, resolve_device_kind, status_register_battery_info,
+        voltage_battery_percentage,
+    };
+
+    #[test]
+    fn status_register_reports_a_level_and_never_a_percentage() {
+        for (wire, level, status) in [
+            (
+                [0x07, 0x00, 0x00],
+                BatteryLevel::Full,
+                BatteryStatus::Discharging,
+            ),
+            (
+                [0x05, 0x00, 0x00],
+                BatteryLevel::Good,
+                BatteryStatus::Discharging,
+            ),
+            (
+                [0x03, 0x21, 0x00],
+                BatteryLevel::Low,
+                BatteryStatus::Charging,
+            ),
+            (
+                [0x01, 0x00, 0x00],
+                BatteryLevel::Critical,
+                BatteryStatus::Discharging,
+            ),
+            // Empty: a nearly dead battery must still read as needing a charge.
+            (
+                [0x00, 0x00, 0x00],
+                BatteryLevel::Critical,
+                BatteryStatus::Discharging,
+            ),
+            // A charging report without a level: "charging, no reading".
+            (
+                [0x00, 0x21, 0x00],
+                BatteryLevel::Unknown,
+                BatteryStatus::Charging,
+            ),
+            // Charge complete is full whatever level came with it.
+            ([0x05, 0x22, 0x00], BatteryLevel::Full, BatteryStatus::Full),
+        ] {
+            let reading = StatusReading::try_from(wire).unwrap();
+            assert_eq!(
+                status_register_battery_info(reading),
+                BatteryInfo {
+                    percentage: None,
+                    level,
+                    status,
+                },
+                "{wire:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn charge_register_buckets_its_percentage_and_reads_charge_complete_as_full() {
+        for (wire, percentage, level, status) in [
+            (
+                [0x4b, 0x00, 0x30],
+                75,
+                BatteryLevel::Good,
+                BatteryStatus::Discharging,
+            ),
+            (
+                [0x0a, 0x00, 0x50],
+                10,
+                BatteryLevel::Critical,
+                BatteryStatus::Charging,
+            ),
+            (
+                [0x5f, 0x00, 0x90],
+                100,
+                BatteryLevel::Full,
+                BatteryStatus::Full,
+            ),
+        ] {
+            let reading = ChargeReading::try_from(wire).unwrap();
+            assert_eq!(
+                charge_register_battery_info(reading),
+                BatteryInfo {
+                    percentage: Some(percentage),
+                    level,
+                    status,
+                },
+                "{wire:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_overrides_a_misreporting_register() {
+        // The crux of #127: a Bolt register calling an MX Anywhere 3S a
+        // `Keyboard` must lose to the device's own `0x0005` = `Mouse`.
+        assert_eq!(
+            resolve_device_kind(Some(DeviceKind::Mouse), DeviceKind::Keyboard),
+            DeviceKind::Mouse
+        );
+    }
+
+    #[test]
+    fn probe_supplies_the_kind_on_the_direct_path() {
+        // No pairing register on the direct path (register = Unknown); the probe
+        // is what restores the button/pointer tabs for a BT-direct mouse.
+        assert_eq!(
+            resolve_device_kind(Some(DeviceKind::Mouse), DeviceKind::Unknown),
+            DeviceKind::Mouse
+        );
+    }
+
+    #[test]
+    fn register_is_the_fallback_when_the_probe_is_absent_or_unmodelled() {
+        // Offline device / no `0x0005` answer → trust the register.
+        assert_eq!(
+            resolve_device_kind(None, DeviceKind::Mouse),
+            DeviceKind::Mouse
+        );
+        // A `0x0005` type we don't model also defers to the register.
+        assert_eq!(
+            resolve_device_kind(Some(DeviceKind::Unknown), DeviceKind::Keyboard),
+            DeviceKind::Keyboard
+        );
+        // Nothing to go on → Unknown (direct path, no probe).
+        assert_eq!(
+            resolve_device_kind(None, DeviceKind::Unknown),
+            DeviceKind::Unknown
+        );
+    }
+
+    #[test]
+    fn legacy_percentage_buckets_into_levels() {
+        assert_eq!(
+            legacy_battery_level_from_percentage(100),
+            BatteryLevel::Full
+        );
+        assert_eq!(legacy_battery_level_from_percentage(90), BatteryLevel::Full);
+        assert_eq!(legacy_battery_level_from_percentage(89), BatteryLevel::Good);
+        assert_eq!(legacy_battery_level_from_percentage(50), BatteryLevel::Good);
+        assert_eq!(legacy_battery_level_from_percentage(49), BatteryLevel::Low);
+        assert_eq!(legacy_battery_level_from_percentage(20), BatteryLevel::Low);
+        assert_eq!(
+            legacy_battery_level_from_percentage(19),
+            BatteryLevel::Critical
+        );
+        assert_eq!(
+            legacy_battery_level_from_percentage(0),
+            BatteryLevel::Critical
+        );
+    }
+
+    #[test]
+    fn coarse_legacy_levels_follow_the_four_level_ranges() {
+        for (discharge_level, expected) in [
+            (0, BatteryLevel::Critical),
+            (5, BatteryLevel::Critical),
+            (10, BatteryLevel::Critical),
+            (11, BatteryLevel::Low),
+            (25, BatteryLevel::Low),
+            (29, BatteryLevel::Low),
+            // The draft says low; the Linux driver and Logitech's Windows
+            // software say good.
+            (30, BatteryLevel::Good),
+            (50, BatteryLevel::Good),
+            (80, BatteryLevel::Good),
+            (81, BatteryLevel::Full),
+            (100, BatteryLevel::Full),
+            (u8::MAX, BatteryLevel::Full),
+        ] {
+            assert_eq!(
+                coarse_legacy_battery_level(discharge_level),
+                expected,
+                "discharge level {discharge_level}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_mileage_selects_the_level_mapping() {
+        // Values where the four-level ranges and the display buckets disagree.
+        for (discharge_level, coarse, display) in [
+            (15, BatteryLevel::Low, BatteryLevel::Critical),
+            (30, BatteryLevel::Good, BatteryLevel::Low),
+            (85, BatteryLevel::Full, BatteryLevel::Good),
+        ] {
+            let without = legacy_battery_info(
+                discharge_level,
+                HidppLegacyBatteryStatus::Discharging,
+                false,
+            );
+            let with =
+                legacy_battery_info(discharge_level, HidppLegacyBatteryStatus::Discharging, true);
+            assert_eq!(without.level, coarse, "{discharge_level} without mileage");
+            assert_eq!(with.level, display, "{discharge_level} with mileage");
+            assert_eq!(without.percentage, Some(discharge_level));
+            assert_eq!(with.percentage, Some(discharge_level));
+        }
+    }
+
+    #[test]
+    fn legacy_off_battery_rules_do_not_depend_on_mileage() {
+        for mileage in [false, true] {
+            let full = legacy_battery_info(0, HidppLegacyBatteryStatus::Full, mileage);
+            assert_eq!(
+                (full.percentage, full.level),
+                (Some(100), BatteryLevel::Full)
+            );
+            let charging = legacy_battery_info(0, HidppLegacyBatteryStatus::Recharging, mileage);
+            assert_eq!(
+                (charging.percentage, charging.level),
+                (None, BatteryLevel::Unknown)
+            );
+        }
+    }
+
+    #[test]
+    fn voltage_percentage_clamps_at_the_curve_ends() {
+        assert_eq!(voltage_battery_percentage(4400), 100);
+        assert_eq!(voltage_battery_percentage(4186), 100);
+        assert_eq!(voltage_battery_percentage(3500), 0);
+        assert_eq!(voltage_battery_percentage(3200), 0);
+    }
+
+    #[test]
+    fn an_undefined_voltage_status_is_unknown_not_full() {
+        assert_eq!(
+            map_voltage_battery_status(HidppVoltageChargingStatus::Unknown),
+            BatteryStatus::Unknown
+        );
+        assert_eq!(
+            map_voltage_battery_status(HidppVoltageChargingStatus::Full),
+            BatteryStatus::Full
+        );
+    }
+
+    #[test]
+    fn voltage_percentage_hits_the_curve_points_exactly() {
+        assert_eq!(voltage_battery_percentage(4067), 90);
+        assert_eq!(voltage_battery_percentage(3811), 50);
+        assert_eq!(voltage_battery_percentage(3646), 5);
+    }
+
+    #[test]
+    fn voltage_percentage_interpolates_between_curve_points() {
+        // Midway through the 3811 (50%) → 3778 (40%) segment.
+        let midpoint = voltage_battery_percentage(3795);
+        assert!(
+            (44..=46).contains(&midpoint),
+            "expected ~45%, got {midpoint}%"
+        );
+    }
+
+    #[test]
+    fn voltage_percentage_is_monotonic() {
+        let mut last = voltage_battery_percentage(3400);
+        for mv in 3400..=4300 {
+            let percent = voltage_battery_percentage(mv);
+            assert!(
+                percent >= last,
+                "{mv} mV mapped to {percent}%, below the {last}% of the previous millivolt"
+            );
+            last = percent;
+        }
+    }
+
+    #[test]
+    fn legacy_status_value_7_maps_to_unknown_not_vanish() {
+        use super::{BatteryStatus, HidppLegacyBatteryStatus, map_legacy_battery_status};
+        // Value 7 ("other charging error") must parse and surface as Unknown so
+        // the battery indicator stays visible instead of disappearing.
+        let mapped = HidppLegacyBatteryStatus::try_from(7u8)
+            .ok()
+            .map(map_legacy_battery_status);
+        assert_eq!(mapped, Some(BatteryStatus::Unknown));
+    }
+
+    #[test]
+    fn direct_identity_kind_only_claims_known_keypads() {
+        // The MX Creative Keypad gets a kind despite reporting DeviceType None;
+        // every other product must stay Unknown so no other device is affected.
+        assert_eq!(
+            direct_identity_kind(0x046d, 0xc354),
+            DeviceKind::Numpad,
+            "known wired keypad must claim a kind"
+        );
+        assert_eq!(direct_identity_kind(0x046d, 0xb034), DeviceKind::Unknown);
+        assert_eq!(direct_identity_kind(0x1234, 0xc354), DeviceKind::Unknown);
+    }
+
+    #[test]
+    fn unifying_kind_maps_all_variants() {
+        let cases = [
+            (UnifyingDeviceKind::Unknown, DeviceKind::Unknown),
+            (UnifyingDeviceKind::Keyboard, DeviceKind::Keyboard),
+            (UnifyingDeviceKind::Mouse, DeviceKind::Mouse),
+            (UnifyingDeviceKind::Numpad, DeviceKind::Numpad),
+            (UnifyingDeviceKind::Presenter, DeviceKind::Presenter),
+            (UnifyingDeviceKind::Remote, DeviceKind::Remote),
+            (UnifyingDeviceKind::Trackball, DeviceKind::Trackball),
+            (UnifyingDeviceKind::Touchpad, DeviceKind::Touchpad),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                map_unifying_kind(input),
+                expected,
+                "kind {input:?} mapped incorrectly"
+            );
+        }
+    }
+}

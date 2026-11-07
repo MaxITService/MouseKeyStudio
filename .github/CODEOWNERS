@@ -1,0 +1,58 @@
+# Code owners for AprilNEA/OpenLogi.
+#
+# This is a personal repository, so every owner must be an individual account
+# with write access — `@org/team` entries do not exist here, and an owner
+# without write access is silently ignored by GitHub. Grant write access
+# before adding someone below.
+#
+# The last matching pattern wins. Shared ownership applies unless a later
+# rule requires AprilNEA's review.
+
+# ── Default ────────────────────────────────────────────────────────────────
+*                               @AprilNEA @davidbudnick
+
+# ── Release, packaging, supply chain ───────────────────────────────────────
+# These paths control release credentials, packaging, dependencies, or build
+# and verification commands.
+/.github/                       @AprilNEA
+/xtask/                         @AprilNEA
+/packaging/                     @AprilNEA
+/.config/                       @AprilNEA
+/.cargo/                        @AprilNEA
+**/.ast-grep/                   @AprilNEA
+/.envrc                         @AprilNEA
+/sgconfig.yml                   @AprilNEA
+**/Cargo.toml                   @AprilNEA
+**/build.rs                     @AprilNEA
+/Cargo.lock                     @AprilNEA
+/release-plz.toml               @AprilNEA
+/rust-toolchain.toml            @AprilNEA
+/rustfmt.toml                   @AprilNEA
+/prek.toml                      @AprilNEA
+/flake.nix                      @AprilNEA
+/devenv.nix                     @AprilNEA
+/devenv.yaml                    @AprilNEA
+/devenv.lock                    @AprilNEA
+
+# ── Update verification ───────────────────────────────────────────────────
+/crates/openlogi-desktop/src/platform/updater.rs @AprilNEA
+
+# ── Licensing and brand ────────────────────────────────────────────────────
+# design/ is proprietary; the license files define the dual-license boundary.
+/LICENSE-MIT                    @AprilNEA
+/LICENSE-APACHE                 @AprilNEA
+/design/                        @AprilNEA
+
+# ── Cross-crate contracts ──────────────────────────────────────────────────
+# openlogi-ipc is an append-only wire format, openlogi-core is the shared
+# config and device model, openlogi-hidpp is a hard fork with its own rules.
+/crates/openlogi-ipc/           @AprilNEA
+/crates/openlogi-core/          @AprilNEA
+/crates/openlogi-hidpp/         @AprilNEA
+/crates/openlogi-hidpp-derive/  @AprilNEA
+
+# ── Agent guides ───────────────────────────────────────────────────────────
+**/AGENTS.md                    @AprilNEA
+**/CLAUDE.md                    @AprilNEA
+/.claude/                       @AprilNEA
+/.agents/                       @AprilNEA

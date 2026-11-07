@@ -1,0 +1,75 @@
+name: Mouse & Key Studio Windows packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_public_key:
+        description: Optional base64 minisign PUBLIC verification key (never a private key)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      MKS_UPDATE_MINISIGN_PUBLIC_KEY: ${{ inputs.update_public_key }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      CARGO_INCREMENTAL: '0'
+      # Compact profile and private-path remapping are owned by Build-Compact.ps1.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Test
+        run: |
+          cargo test --locked -p openlogi-core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p openlogi-ui
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p openlogi-desktop --features ui-snapshots
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./scripts/Test-PortablePackage.ps1
+      - name: Build
+        run: ./scripts/Build-Compact.ps1
+      - name: Check release path privacy
+        run: ./scripts/Test-ReleasePrivacy.ps1
+      - name: Notices and portable ZIP
+        run: |
+          ./scripts/Write-ThirdPartyNotices.ps1
+          ./scripts/Package-Portable.ps1
+      - name: Install pinned MSI tools
+        run: |
+          dotnet tool install wix --version 6.0.2 --tool-path "$env:RUNNER_TEMP/wix"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/wix/wix.exe" extension add --global WixToolset.UI.wixext/6.0.2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/wix/wix.exe" extension add --global WixToolset.Util.wixext/6.0.2
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package and inspect MSI without installing
+        run: |
+          ./scripts/Package-Msi.ps1 -Wix "$env:RUNNER_TEMP/wix/wix.exe"
+          ./scripts/Test-MsiPackage.ps1
+          ./scripts/Test-UpdateManifest.ps1 -MsiFile target/portable/MouseKeyStudio-windows-x64.msi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: MouseKeyStudio-windows-x64
+          path: |
+            target/portable/MouseKeyStudio-windows-x64.zip
+            target/portable/MouseKeyStudio-windows-x64.msi
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

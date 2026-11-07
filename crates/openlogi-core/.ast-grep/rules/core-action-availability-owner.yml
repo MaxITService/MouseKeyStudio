@@ -1,0 +1,15 @@
+id: core-action-availability-owner
+language: rust
+severity: error
+message: Action::is_available owns host support; ask the action (or PowerUserKind::is_available) instead of duplicating platform checks in pickers.
+files:
+  - crates/openlogi-desktop/src/features/**/*.rs
+rule:
+  all:
+    - pattern: cfg!($$$CFG)
+    - inside:
+        kind: call_expression
+        has:
+          regex: 'PowerUserKind::(TypeText|RunAppleScript)'
+          stopBy: end
+        stopBy: end

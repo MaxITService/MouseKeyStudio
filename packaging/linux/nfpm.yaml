@@ -1,0 +1,134 @@
+# nfpm package descriptor for Mouse & Key Studio Linux packages (.deb / .rpm / .pkg.tar.zst).
+#
+# Build with the xtask:
+#   cargo run -p xtask -- linux package
+#
+# Or directly (requires nfpm in PATH; set VERSION and PKG_ARCH):
+#   VERSION=0.6.0 PKG_ARCH=amd64 nfpm package --packager deb --target target/release
+#   VERSION=0.6.0 PKG_ARCH=arm64 nfpm package --packager rpm --target target/release
+#   VERSION=0.6.0 PKG_ARCH=amd64 nfpm package --packager archlinux --target target/release
+
+name: mousekey-studio
+version: "${VERSION}"
+arch: "${PKG_ARCH}"
+maintainer: Maxim Fomin
+description: |-
+  Logitech HID++ device control — remap buttons, DPI, and SmartShift.
+  An open-source, local-first alternative to Logi Options+. No account,
+  no telemetry; configuration lives in a plain TOML file.
+homepage: https://github.com/MaxITService/MouseKeyStudio
+license: Apache-2.0 OR MIT
+
+contents:
+  # ── binaries ────────────────────────────────────────────────────────────────
+  - src: target/release/mks
+    dst: /usr/bin/mks
+    file_info:
+      mode: 0755
+
+  - src: target/release/mousekey-studio
+    dst: /usr/bin/mousekey-studio
+    file_info:
+      mode: 0755
+
+  - src: target/release/mks-overlay
+    dst: /usr/bin/mks-overlay
+    file_info:
+      mode: 0755
+
+  - src: target/release/mks-agent
+    dst: /usr/bin/mks-agent
+    file_info:
+      mode: 0755
+
+  # ── udev rules ──────────────────────────────────────────────────────────────
+  - src: packaging/linux/udev/70-mousekey-studio.rules
+    dst: /etc/udev/rules.d/70-mousekey-studio.rules
+    file_info:
+      mode: 0644
+
+  # ── systemd user unit ───────────────────────────────────────────────────────
+  - src: packaging/linux/systemd/mks-agent.service
+    dst: /usr/lib/systemd/user/mks-agent.service
+    file_info:
+      mode: 0644
+
+  # ── XDG desktop entry ───────────────────────────────────────────────────────
+  - src: packaging/linux/desktop/mousekey-studio.desktop
+    dst: /usr/share/applications/mousekey-studio.desktop
+    file_info:
+      mode: 0644
+
+  # ── icon ────────────────────────────────────────────────────────────────────
+  # Every standard indexed hicolor size, not just the 1024 master: a stock
+  # `hicolor/index.theme` stops at 512x512, so a launcher that resolves icons
+  # by theme index (KDE's kbuildsycoca, most GTK launchers) finds nothing at
+  # all when only `1024x1024/apps` is installed.
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/1024x1024/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/256x256/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/128x128/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/64x64/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/48x48/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/32x32/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+  - src: assets/plus/icon.png
+    dst: /usr/share/icons/hicolor/16x16/apps/mousekey-studio.png
+    file_info:
+      mode: 0644
+
+  - src: LICENSE-APACHE
+    dst: /usr/share/licenses/mousekey-studio/LICENSE-APACHE
+    file_info:
+      mode: 0644
+
+  - src: LICENSE-MIT
+    dst: /usr/share/licenses/mousekey-studio/LICENSE-MIT
+    file_info:
+      mode: 0644
+
+archlinux:
+  packager: "Maxim Fomin"
+
+overrides:
+  deb:
+    depends:
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libxcb1
+  archlinux:
+    depends:
+      - dbus
+      - fontconfig
+      - gcc-libs
+      - glibc
+      - libglvnd
+      - libxcb
+      - libxkbcommon
+      - libxkbcommon-x11
+      - vulkan-icd-loader
+      - wayland
+
+scripts:
+  postinstall: packaging/linux/nfpm-scripts/postinstall.sh
+  postremove: packaging/linux/nfpm-scripts/postremove.sh

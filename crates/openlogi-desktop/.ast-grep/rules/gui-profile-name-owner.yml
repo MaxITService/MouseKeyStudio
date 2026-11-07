@@ -1,0 +1,28 @@
+# Owner: openlogi-core's app::profile_display_name — what every surface calls a
+# per-app profile: an alias's name, the name the agent reported for the
+# application, or one derived from the identifier. The GUI asks it once, in
+# AppState::profile_name (behind features::profiles::profile_name), and the
+# Windows tray asks it too, so one profile has one name everywhere.
+id: gui-profile-name-owner
+language: rust
+severity: error
+message: A per-app profile's name comes from features::profiles::profile_name. Call it instead of composing the name from its ingredients here.
+note: |
+  "The recent name, else friendly_app_name" was copied into five call sites.
+  An `app:<alias>` key has no recent name and no readable last component, so
+  each copy would have shown the raw key. See "Single source of truth" in
+  AGENTS.md.
+files:
+  - crates/openlogi-desktop/src/**/*.rs
+ignores:
+  - crates/openlogi-desktop/src/state.rs
+  # The title's fallback while no AppState exists to name the profile from.
+  - crates/openlogi-desktop/src/features/profiles/applications.rs
+  - "**/tests.rs"
+  - "**/tests/**"
+rule:
+  any:
+    - pattern: profile_display_name($$$ARGS)
+    - pattern: $PATH::profile_display_name($$$ARGS)
+    - pattern: readable_app_name($$$ARGS)
+    - pattern: $PATH::readable_app_name($$$ARGS)

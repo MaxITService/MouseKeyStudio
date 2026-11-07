@@ -1,0 +1,14 @@
+# MacroDraft owns the saved assignment and dirty comparison. Loading JSON or
+# an example changes the draft without changing what counts as already saved.
+id: gui-macro-draft-baseline-owner
+language: rust
+severity: error
+message: Use MacroDraft::load_draft or has_unsaved_changes; only MacroDraft owns the saved baseline.
+files:
+  - crates/openlogi-desktop/src/features/mouse/**/*.rs
+ignores:
+  - crates/openlogi-desktop/src/features/mouse/macro_editor.rs
+rule:
+  any:
+    - pattern: $VIEW.macro_draft.baseline
+    - pattern: draft.baseline

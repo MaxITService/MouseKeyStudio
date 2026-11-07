@@ -1,0 +1,12 @@
+id: desktop-updater-eligibility-owner
+language: rust
+severity: error
+message: platform::updater::policy owns update eligibility; use availability instead of deriving it from the MSI receipt.
+files:
+  - crates/openlogi-desktop/src/windows/**/*.rs
+  - crates/openlogi-desktop/src/platform/updater.rs
+rule:
+  any:
+    - pattern: $SOURCE == InstallationSource::WindowsMsi
+    - pattern: InstallationSource::WindowsMsi == $SOURCE
+    - pattern: matches!($SOURCE, InstallationSource::WindowsMsi)

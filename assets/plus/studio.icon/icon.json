@@ -1,0 +1,19 @@
+{
+  "fill": {
+    "solid": "srgb:0.13,0.10,0.08,1.0"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "studio.png",
+          "name": "Mouse & Key Studio",
+          "glass": false
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

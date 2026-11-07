@@ -1,0 +1,148 @@
+# Devenv
+/.untracked/
+/AGENTS.md
+
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# The root flake.nix is a deprecated alias for packaging/. Nix writes a lock for
+# it on local use; packaging/flake.lock is the one that pins the inputs.
+/flake.lock
+
+# Added by cargo
+
+/target
+
+# Local reference clone of external-reference — studied for architecture,
+# never copied or vendored. Cloned at the project root for convenience.
+/local-reference/
+
+# Track the orb lifecycle, shared rules, and curated project skills. Other agent state
+# and skills stay local. Keep parent directories visible for these exceptions.
+/.agents/*
+!/.agents/resume
+!/.agents/setup
+!/.agents/rules/
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/gpui-kit/
+!/.agents/skills/gpui-kit-design-guides/
+!/.agents/skills/testing-openlogi-ui/
+!/.agents/skills/diagnosing-openlogi-devices/
+!/.agents/skills/verifying-openlogi-changes/
+!/.agents/skills/contributing-device-fixtures/
+!/.agents/skills/LICENSE-APACHE
+!/.agents/skills/ast-grep/
+!/.agents/skills/LICENSE-MIT-ast-grep
+
+# Local planning docs — kept on disk, never committed.
+/UI.md
+/PLAN.md
+
+# Local git worktrees (`git worktree add .worktrees/<slug>`).
+.worktrees/
+
+# Claude Code worktrees, transcripts, local settings — per-developer state.
+# Track only CLAUDE.md (it imports AGENTS.md) and the rules symlink here; shared
+# rule files live in .agents/rules/.
+/.claude/*
+!/.claude/CLAUDE.md
+!/.claude/rules
+# Project skills are named explicitly and tracked; everything else under
+# .claude/skills/ is the per-developer symlink farm into .agents/skills/.
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/openlogi-macos-permissions/
+!/.claude/skills/gpui-kit
+!/.claude/skills/gpui-kit-design-guides
+!/.claude/skills/testing-openlogi-ui
+!/.claude/skills/diagnosing-openlogi-devices
+!/.claude/skills/verifying-openlogi-changes
+!/.claude/skills/contributing-device-fixtures
+!/.claude/skills/ast-grep
+
+# No Node project is tracked. This keeps an old install of the removed
+# release-notes script out of `git status`.
+node_modules/
+
+# macOS finder metadata
+.DS_Store
+
+# Compiled icons — `cargo xtask macos icon` rebuilds them from the Icon
+# Composer documents in `design/icon` on every bundle build. `AppIcon.icns` is
+# the exception: `cargo bundle` reads it straight from the manifest, so it stays
+# tracked and a plain `cargo bundle` still produces an app with an icon.
+/crates/openlogi-desktop/icon/*.icns
+!/crates/openlogi-desktop/icon/AppIcon.icns
+/crates/openlogi-desktop/icon/Assets.car
+/crates/openlogi-desktop/icon/previews/
+
+# Packaging output.
+*.dmg
+
+# flatpak-builder output and scratch state.
+/.flatpak-builder/
+/build/
+/repo/
+
+# Custom local runtime, logs and private backups.
+/dist/
+/.local/
+
+# Secrets and machine-specific environment (keep reviewed examples publishable).
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+credentials.json
+service-account*.json
+.ssh/
+.aws/
+.azure/
+
+# Local editor/session state and one-off project notes.
+/.vscode/
+/t3.json
+/PROJECT.md
+/design-mock-control.md
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+__pycache__/
+*.pyc
+/custom-build-version.txt
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+
+# Local portable settings and bootstrap choices, never source/build inputs.
+/settings/
+/portable-locations/
+/config.toml
+/config.toml.*
+/config-location.toml
+/mousekey-studio-portable.toml
+
+# Upstream branding is all-rights-reserved, not MIT/Apache-2.0.
+# Keep its notice; provide independently licensed replacement art before release.
+/design/*
+!/design/LICENSE
+/crates/openlogi-desktop/icon/AppIcon.icns
+
+# Private deployment recipe for the previous local installation.
+/scripts/Deploy-Custom.ps1
+/Start-OpenLogi.cmd

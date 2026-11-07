@@ -1,0 +1,12 @@
+id: core-windows-application-id-owner
+language: rust
+severity: error
+message: openlogi_core::app::windows_executable_id owns the Windows profile identifier; use it for both process paths and selected executable paths.
+files:
+  - crates/**/*.rs
+ignores:
+  - crates/openlogi-core/src/app.rs
+rule:
+  any:
+    - pattern: $PATH.to_string_lossy().to_lowercase()
+    - pattern: 'ForegroundApp { id: $PATH.to_lowercase(), $$$REST }'

@@ -1,0 +1,15 @@
+# Editor/profile help is long enough that the toolkit's one-line tooltip clips.
+# ui::components owns wrapping and the viewport limit for these controls.
+id: gui-detailed-tooltip-owner
+language: rust
+severity: error
+message: Use ui::components::detailed_tooltip or DetailedTooltip for editor/profile help so it wraps within the window.
+files:
+  - crates/openlogi-desktop/src/features/mouse/**/*.rs
+  - crates/openlogi-desktop/src/features/profiles/**/*.rs
+  - crates/openlogi-desktop/src/features/profiles.rs
+  - crates/openlogi-desktop/src/features/binding_editor.rs
+rule:
+  any:
+    - pattern: Tooltip::new($$$ARGS)
+    - pattern: $BUTTON.tooltip(tr!($$$ARGS))

@@ -1,0 +1,13 @@
+id: gui-profile-executable-owner
+language: rust
+severity: error
+message: features::profiles::executable owns executable directory eligibility and reveal actions; use its directory_button instead of opening paths here.
+note: |
+  The Add-app picker and assigned-app list share this decision so alias and
+  filename selectors cannot acquire misleading file-manager actions.
+files:
+  - crates/openlogi-desktop/src/features/profiles/**/*.rs
+ignores:
+  - crates/openlogi-desktop/src/features/profiles/executable.rs
+rule:
+  pattern: $CX.reveal_path($$$ARGS)

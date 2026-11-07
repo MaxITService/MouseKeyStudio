@@ -1,0 +1,84 @@
+// OpenLogi Frontmost Window — GNOME Shell extension.
+//
+// Exports a tiny D-Bus service that returns the WM_CLASS of the currently
+// focused window and signals focus changes. OpenLogi's `gnome_shell` backend
+// uses this to drive per-app mouse-profile switching on GNOME Wayland, where
+// the focused window is otherwise not visible to ordinary clients.
+//
+// It also keeps Actions Ring surfaces out of GNOME's window animations so
+// their initial pointer coordinates stay valid. No titles, window contents,
+// or input are read. ESM module style; targets GNOME Shell 45+.
+
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+import {withoutRingAnimation} from './ringAnimation.js';
+
+const DBUS_NAME = 'io.github.maxitservice.mousekeystudio.Frontmost';
+const DBUS_PATH = '/io/github/maxitservice/mousekeystudio/Frontmost';
+const DBUS_INTERFACE = `
+<node>
+  <interface name="io.github.maxitservice.mousekeystudio.Frontmost">
+    <method name="GetFocusedWmClass">
+      <arg type="s" direction="out" name="wmClass"/>
+    </method>
+    <signal name="FocusedWmClassChanged">
+      <arg type="s" name="wmClass"/>
+    </signal>
+  </interface>
+</node>`;
+
+export default class OpenLogiFrontmostExtension extends Extension {
+    enable() {
+        this._dbus = Gio.DBusExportedObject.wrapJSObject(DBUS_INTERFACE, this);
+        this._dbus.export(Gio.DBus.session, DBUS_PATH);
+        this._nameId = Gio.bus_own_name_on_connection(
+            Gio.DBus.session,
+            DBUS_NAME,
+            Gio.BusNameOwnerFlags.NONE,
+            null,
+            null);
+        this._focusChangedId = global.display.connect(
+            'notify::focus-window',
+            () => this._emitFocusedWmClassChanged());
+
+        this._ringAnimations = new InjectionManager();
+        this._ringAnimations.overrideMethod(
+            Main.wm, '_shouldAnimateActor', withoutRingAnimation);
+    }
+
+    disable() {
+        this._ringAnimations?.clear();
+        this._ringAnimations = null;
+        if (this._focusChangedId) {
+            global.display.disconnect(this._focusChangedId);
+            this._focusChangedId = 0;
+        }
+        if (this._nameId) {
+            Gio.bus_unown_name(this._nameId);
+            this._nameId = 0;
+        }
+        if (this._dbus) {
+            this._dbus.unexport();
+            this._dbus = null;
+        }
+    }
+
+    // D-Bus method io.github.maxitservice.mousekeystudio.Frontmost.GetFocusedWmClass.
+    GetFocusedWmClass() {
+        const win = global.display.focus_window;
+        if (!win)
+            return '';
+        return win.get_wm_class() || '';
+    }
+
+    _emitFocusedWmClassChanged() {
+        if (this._dbus) {
+            this._dbus.emit_signal(
+                'FocusedWmClassChanged',
+                new GLib.Variant('(s)', [this.GetFocusedWmClass()]));
+        }
+    }
+}

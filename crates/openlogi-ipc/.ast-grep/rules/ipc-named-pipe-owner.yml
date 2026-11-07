@@ -1,0 +1,10 @@
+id: ipc-named-pipe-owner
+language: Rust
+severity: error
+message: Windows IPC names belong to transport::namespaced_endpoint so dev and production stay isolated.
+files:
+  - crates/**/*.rs
+ignores:
+  - crates/openlogi-ipc/src/transport.rs
+rule:
+  pattern: $NAME.to_ns_name::<$KIND>()

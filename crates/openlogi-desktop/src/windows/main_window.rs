@@ -1,0 +1,111 @@
+//! The primary application window.
+//!
+//! Kept a singleton through the same [`WindowRegistry`] slot the auxiliary
+//! windows use, so the dock-icon reopen handler, the tray's "Show Main Window"
+//! and any repeat call all land on the live window instead of stacking a
+//! duplicate — and a window closed while the app kept running in the menu bar
+//! can be brought back.
+
+use gpui::{App, AppContext as _, Pixels, Size, Styled as _, WindowOptions, px};
+use gpui_component::{ActiveTheme as _, Root};
+use openlogi_core::brand::APP_ID;
+use tracing::warn;
+
+use crate::app::AppView;
+use crate::ui::theme;
+use crate::windows::{WindowFit, WindowRegistry, titlebar_options};
+
+/// The client size a fresh main window opens at when the work area holds it.
+pub(super) const PREFERRED_SIZE: Size<Pixels> = Size {
+    width: px(1280.),
+    height: px(820.),
+};
+
+/// How far the user may shrink the main window. The height keeps the buttons
+/// tab's mouse model above its scale floor (`MODEL_MIN_H` + the chrome/padding
+/// reserve) so its side labels never overlap; below this the model can't
+/// shrink further without crowding. [`WindowFit`] lowers it only on a work
+/// area too small to hold it.
+pub(super) const MIN_SIZE: Size<Pixels> = Size {
+    width: px(720.),
+    height: px(680.),
+};
+
+fn window_options(cx: &mut App) -> WindowOptions {
+    let fit = WindowFit::on_primary_display(PREFERRED_SIZE, MIN_SIZE, cx);
+    WindowOptions {
+        // Advertise a Wayland xdg-toplevel app_id (and X11 WM_CLASS). Without it
+        // the window ships no app_id, so GNOME's `get_wm_class()` returns empty
+        // and our own `gnome_shell` frontmost backend reports OpenLogi as `None`
+        // (and the dash can't group the window under its launcher icon). The id
+        // is the shared `brand::APP_ID`, matching the desktop file's
+        // `StartupWMClass` and the macOS bundle-id family.
+        app_id: Some(APP_ID.into()),
+        // Linux: transparent chrome so `AppView::render` can draw a client-side
+        // `TitleBar` (the compositor declines server-side decorations and gpui's
+        // fallback is unpainted). macOS/Windows keep their native titlebar.
+        titlebar: Some(titlebar_options(openlogi_core::brand::APP_NAME)),
+        ..WindowOptions::from(fit)
+    }
+}
+
+/// Open the main window — or focus the one already open.
+pub fn open(cx: &mut App) {
+    let existing = cx.default_global::<WindowRegistry>().main;
+    if let Some(handle) = existing
+        && handle
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        cx.activate(true);
+        return;
+    }
+
+    let options = window_options(cx);
+    let opened = cx.open_window(options, |window, cx| {
+        theme::apply_from_settings(Some(window), cx);
+
+        let view = cx.new(|cx| AppView::new(window, cx));
+
+        let appearance_obs = window.observe_window_appearance(|window, cx| {
+            theme::apply_from_settings(Some(window), cx);
+        });
+        view.update(cx, |v, _| v.set_appearance_obs(appearance_obs));
+
+        cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
+    });
+
+    match opened {
+        Ok(handle) => {
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            cx.default_global::<WindowRegistry>().main = Some(handle);
+            cx.activate(true);
+        }
+        Err(e) => warn!(error = %e, "could not open the main window"),
+    }
+}
+
+/// Open the main window as the session anchor when no window is currently open.
+///
+/// The auxiliary windows are standalone, so opening one with no main window up
+/// would leave the app quitting the moment that window closes.
+pub fn ensure(cx: &mut App) {
+    if cx.windows().is_empty() {
+        open(cx);
+    }
+}
+
+/// Focus the main window and navigate to the saved tray destination.
+pub fn open_from_tray(cx: &mut App) {
+    open(cx);
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    if let Some(handle) = cx.default_global::<WindowRegistry>().main {
+        let _ = handle.update(cx, |root, _, cx| {
+            if let Ok(view) = root.view().clone().downcast::<AppView>() {
+                view.update(cx, AppView::open_tray_device);
+            }
+        });
+    }
+}

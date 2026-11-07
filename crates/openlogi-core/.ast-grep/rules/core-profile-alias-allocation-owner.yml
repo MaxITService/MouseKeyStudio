@@ -1,0 +1,13 @@
+id: core-profile-alias-allocation-owner
+language: rust
+severity: error
+message: AppAliases owns generated profile alias names; use Config profile assignment or duplication instead of allocating a name in a consumer.
+files:
+  - crates/**/*.rs
+ignores:
+  - crates/openlogi-core/src/app/aliases.rs
+rule:
+  pattern: AppAliasName::try_new($NAME)
+constraints:
+  NAME:
+    regex: '^format!\(\s*"profile-'

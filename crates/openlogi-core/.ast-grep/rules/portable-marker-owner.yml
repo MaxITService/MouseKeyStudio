@@ -1,0 +1,13 @@
+id: core-portable-marker-owner
+language: rust
+severity: error
+message: openlogi_core::paths::is_portable_executable owns portable detection. Do not rebuild its marker path in another consumer.
+files:
+  - crates/**/*.rs
+ignores:
+  - crates/openlogi-core/src/paths/config_location.rs
+  - crates/openlogi-core/src/paths/config_location/**
+  - '**/tests.rs'
+  - '**/tests/**'
+rule:
+  pattern: $DIRECTORY.join("mousekey-studio-portable.toml")

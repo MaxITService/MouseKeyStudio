@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Mouse & Key Studio
+Comment=Logitech HID++ device control — remap buttons, DPI, SmartShift
+Comment[es]=Control de dispositivos Logitech HID++: reasignación de botones, DPI y SmartShift
+Exec=mousekey-studio
+Icon=mousekey-studio
+Terminal=false
+# Ties the running window (Wayland xdg-toplevel app_id / X11 WM_CLASS) back to
+# this launcher so GNOME groups it under the Mouse & Key Studio icon instead of a generic
+# one. Must match `openlogi_core::brand::APP_ID`, the value the GUI advertises.
+StartupWMClass=io.github.maxitservice.mousekeystudio
+Categories=Settings;HardwareSettings;
+Keywords=logitech;mouse;hid;remap;dpi;
+StartupNotify=true
