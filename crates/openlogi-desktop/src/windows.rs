@@ -172,6 +172,18 @@ pub fn aux_title_bar(title: impl Into<SharedString>, cx: &App) -> impl IntoEleme
     )
 }
 
+/// The main window's title: the product name, marked when this process runs
+/// with administrator rights so an elevated GUI is never mistaken for a normal
+/// one. Elevation is fixed for the process lifetime, so it is read once.
+pub fn product_title() -> SharedString {
+    let name = openlogi_core::brand::APP_NAME;
+    if crate::platform::elevation::is_elevated() {
+        SharedString::from(format!("{name} ({})", tr!("app.administrator")))
+    } else {
+        SharedString::from(name)
+    }
+}
+
 /// Restamp the native titles of the open auxiliary windows after a live
 /// language switch. The Linux client-side titlebar re-renders with the window
 /// refresh, but the macOS / Windows native titlebar keeps the string stamped

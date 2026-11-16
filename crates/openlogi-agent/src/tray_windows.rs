@@ -321,18 +321,34 @@ unsafe fn add_tray_icon(hwnd: HWND) {
     }
 }
 
-fn current_tooltip() -> String {
-    if !SHOW_BATTERY.load(Ordering::Relaxed) {
-        return openlogi_core::brand::APP_NAME.into();
-    }
-    INVENTORY.get().map_or_else(
-        || openlogi_core::brand::APP_NAME.into(),
-        |source| battery_tooltip(&source.snapshot().inventory),
-    )
+/// Whether the agent runs with administrator rights — fixed for the process
+/// lifetime, so the token is read once.
+fn elevated() -> bool {
+    static ELEVATED: OnceLock<bool> = OnceLock::new();
+    *ELEVATED.get_or_init(openlogi_permissions::is_elevated)
 }
 
-fn battery_tooltip(inventories: &[DeviceInventory]) -> String {
-    let mut lines = vec![openlogi_core::brand::APP_NAME.to_string()];
+/// The tooltip's first line: the product name, marked when elevated.
+fn tooltip_title() -> String {
+    let name = openlogi_core::brand::APP_NAME;
+    if elevated() {
+        format!("{name} ({})", rust_i18n::t!("app.administrator"))
+    } else {
+        name.to_string()
+    }
+}
+
+fn current_tooltip() -> String {
+    if !SHOW_BATTERY.load(Ordering::Relaxed) {
+        return tooltip_title();
+    }
+    INVENTORY.get().map_or_else(tooltip_title, |source| {
+        battery_tooltip(tooltip_title(), &source.snapshot().inventory)
+    })
+}
+
+fn battery_tooltip(title: String, inventories: &[DeviceInventory]) -> String {
+    let mut lines = vec![title];
     for device in inventories.iter().flat_map(|inventory| &inventory.paired) {
         if !device.online {
             continue;
@@ -462,6 +478,7 @@ unsafe fn show_menu(hwnd: HWND) {
         }
         // Built fresh on every right-click, so `t!` follows a live language
         // switch with no rebuild plumbing.
+        append_elevation_badge(menu);
         append(
             menu,
             MF_STRING,
@@ -588,6 +605,23 @@ unsafe fn append_dpi_presets(menu: HMENU, choices: &[menu::DpiChoice]) -> Vec<(S
         );
     }
     presets
+}
+
+/// A disabled "Running as administrator" header when the agent is elevated.
+unsafe fn append_elevation_badge(menu: HMENU) {
+    if !elevated() {
+        return;
+    }
+    // SAFETY: `menu` is the caller's live menu; the label outlives the call.
+    unsafe {
+        append(
+            menu,
+            MF_STRING | MF_GRAYED,
+            0,
+            &rust_i18n::t!("app.running_as_administrator"),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+    }
 }
 
 fn checked(on: bool) -> u32 {
@@ -819,16 +853,19 @@ mod tests {
             paired: vec![device("G502 X", Some(78)), device("MX Keys", Some(54))],
         };
         assert_eq!(
-            super::battery_tooltip(&[inventory.clone()]),
+            super::battery_tooltip(openlogi_core::brand::APP_NAME.into(), &[inventory.clone()]),
             "Mouse & Key Studio\nG502 X: 78%\nMX Keys: 54%"
         );
         inventory.paired[0].online = false;
         inventory.paired[1].battery = None;
         assert_eq!(
-            super::battery_tooltip(&[inventory]),
+            super::battery_tooltip(openlogi_core::brand::APP_NAME.into(), &[inventory]),
             openlogi_core::brand::APP_NAME
         );
-        assert_eq!(super::battery_tooltip(&[]), openlogi_core::brand::APP_NAME);
+        assert_eq!(
+            super::battery_tooltip(openlogi_core::brand::APP_NAME.into(), &[]),
+            openlogi_core::brand::APP_NAME
+        );
     }
 
     #[test]

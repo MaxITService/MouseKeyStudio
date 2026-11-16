@@ -51,6 +51,30 @@ use crate::services::{i18n, ipc};
 use crate::state::ConfigPersistence;
 use crate::ui::theme;
 
+/// Take the GUI's single-instance lock. An elevated relaunch starts while the
+/// instance that asked for it still holds the lock — it quits once the agent
+/// has been handed over — so that start waits for the lock instead of exiting.
+fn acquire_gui_lock() -> Result<
+    openlogi_core::single_instance::InstanceGuard,
+    openlogi_core::single_instance::InstanceError,
+> {
+    use openlogi_core::single_instance::{InstanceError, Role, acquire};
+    const RELAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let waiting_until =
+        platform::elevation::is_relaunch().then(|| std::time::Instant::now() + RELAUNCH_WAIT);
+    loop {
+        match acquire(Role::Gui) {
+            Err(InstanceError::AlreadyRunning { .. })
+                if waiting_until.is_some_and(|until| std::time::Instant::now() < until) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -59,18 +83,17 @@ fn main() -> Result<()> {
         return result;
     }
 
-    let _guard =
-        match openlogi_core::single_instance::acquire(openlogi_core::single_instance::Role::Gui) {
-            Ok(g) => g,
-            Err(openlogi_core::single_instance::InstanceError::AlreadyRunning { path }) => {
-                info!(
-                    path = %path.display(),
-                    "another OpenLogi instance is already running — exiting"
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(anyhow::Error::from(e).context("single-instance check")),
-        };
+    let _guard = match acquire_gui_lock() {
+        Ok(g) => g,
+        Err(openlogi_core::single_instance::InstanceError::AlreadyRunning { path }) => {
+            info!(
+                path = %path.display(),
+                "another OpenLogi instance is already running — exiting"
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(anyhow::Error::from(e).context("single-instance check")),
+    };
 
     let (initial_config, config_persistence) = match ConfigFile::load_or_default() {
         Ok((config, file)) => (config, ConfigPersistence::UserFile(file)),

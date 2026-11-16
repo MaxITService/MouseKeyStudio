@@ -35,6 +35,46 @@ fn windows_pipe_name(name: &str, profile: openlogi_core::paths::Profile) -> Stri
     }
 }
 
+/// Listener options for an endpoint of this suite: every process of this user
+/// must reach it, whichever side of the UAC boundary either end runs on.
+///
+/// A named pipe created by an elevated process gets a default DACL that lets
+/// only Administrators and SYSTEM write, which locks the same user's
+/// unelevated processes out — an unelevated GUI could not reach an elevated
+/// agent, and an unelevated agent's tray could not wake an elevated GUI. The
+/// descriptor names the account itself, so both directions connect and other
+/// accounts still cannot. No-op on Unix, where the socket's directory decides.
+pub(crate) fn listener_options(
+    name: interprocess::local_socket::Name<'static>,
+) -> ListenerOptions<'static> {
+    let options = ListenerOptions::new().name(name);
+    #[cfg(windows)]
+    let options = match same_user_descriptor() {
+        Some(descriptor) => {
+            use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+            options.security_descriptor(descriptor)
+        }
+        // Without the account SID the default DACL still serves two processes
+        // on the same side of the boundary.
+        None => options,
+    };
+    options
+}
+
+/// Full access for SYSTEM, Administrators and this account; nobody else.
+#[cfg(windows)]
+fn same_user_descriptor()
+-> Option<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    let sid = openlogi_permissions::current_user_sid()?;
+    let sddl = widestring::U16CString::from_str(same_user_sddl(&sid)).ok()?;
+    interprocess::os::windows::security_descriptor::SecurityDescriptor::deserialize(&sddl).ok()
+}
+
+#[cfg(windows)]
+fn same_user_sddl(sid: &str) -> String {
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{sid})")
+}
+
 /// Resolve the IPC endpoint name.
 ///
 /// On Unix this is the filesystem Unix-domain socket at
@@ -58,9 +98,9 @@ pub fn endpoint_name() -> io::Result<interprocess::local_socket::Name<'static>> 
     }
     #[cfg(windows)]
     {
-        // A per-profile machine-wide pipe name. The default DACL grants the creating
-        // user + administrators, which is acceptable for a single-user desktop;
-        // per-user isolation on a shared machine is a future hardening point.
+        // A per-profile machine-wide pipe name; `listener_options` restricts
+        // it to this account. Two accounts signed in at once still contend
+        // for the one name — a future hardening point.
         namespaced_endpoint("mousekey-studio-agent.sock")
     }
 }
@@ -88,8 +128,7 @@ pub fn bind() -> io::Result<Listener> {
     {
         std::fs::create_dir_all(parent)?;
     }
-    ListenerOptions::new()
-        .name(endpoint_name()?)
+    listener_options(endpoint_name()?)
         .try_overwrite(true)
         .create_tokio()
 }
@@ -121,8 +160,19 @@ where
 #[cfg(test)]
 #[cfg(windows)]
 mod tests {
-    use super::windows_pipe_name;
+    use super::{same_user_descriptor, same_user_sddl, windows_pipe_name};
     use openlogi_core::paths::Profile;
+
+    #[test]
+    fn pipes_admit_this_account_on_both_sides_of_the_uac_boundary() {
+        // The default DACL of an elevated creator admits Administrators only,
+        // which an unelevated process of the same user is not.
+        assert_eq!(
+            same_user_sddl("S-1-5-21-1-2-3-1001"),
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-21-1-2-3-1001)"
+        );
+        assert!(same_user_descriptor().is_some());
+    }
 
     #[test]
     fn windows_dev_endpoints_preserve_production_and_isolate_both_services() {

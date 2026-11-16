@@ -24,6 +24,9 @@ pub(crate) enum ShutdownRequest {
     },
     /// The installed application disappeared from disk.
     Uninstalled,
+    /// A client asked the agent to leave so it can start a successor — the
+    /// GUI relaunching with administrator rights.
+    RelaunchQuit,
     /// The executable was replaced and the process should become `path`.
     Restart {
         path: PathBuf,
@@ -47,10 +50,23 @@ impl ShutdownRequests {
     }
 }
 
+/// The sender the IPC server reaches through [`request_relaunch_quit`]; set
+/// once by [`request_channel`].
+static IPC_REQUESTS: std::sync::OnceLock<ShutdownRequestSender> = std::sync::OnceLock::new();
+
 /// Build the process-wide non-signal shutdown channel.
 pub(crate) fn request_channel() -> (ShutdownRequestSender, ShutdownRequests) {
     let (tx, rx) = mpsc::unbounded_channel();
+    let _ = IPC_REQUESTS.set(tx.clone());
     (tx, ShutdownRequests(rx))
+}
+
+/// Ask the lifecycle to leave for a relaunching client. `false` when no
+/// lifecycle is listening any more.
+pub(crate) fn request_relaunch_quit() -> bool {
+    IPC_REQUESTS
+        .get()
+        .is_some_and(|requests| requests.send(ShutdownRequest::RelaunchQuit).is_ok())
 }
 
 /// Ask the async lifecycle to quit, then block this tray thread until the

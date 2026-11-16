@@ -608,7 +608,7 @@ fn app_title_bar(cx: &App) -> impl IntoElement {
             .justify_center()
             .text_body()
             .text_color(pal.text_muted)
-            .child(openlogi_core::brand::APP_NAME),
+            .child(crate::windows::product_title()),
     )
 }
 
@@ -688,7 +688,7 @@ impl AppView {
             .map(gpui::SharedString::from);
         self.config_issue_visible = config_issue.is_some();
         if let Some(issue) = config_issue {
-            window.set_window_title(openlogi_core::brand::APP_NAME);
+            window.set_window_title(&crate::windows::product_title());
             return root
                 .child(status::config_issue_body(issue, cx))
                 .into_any_element();
@@ -706,15 +706,15 @@ impl AppView {
             .map_or(AgentLink::Connecting, |s| s.agent_link().clone());
         let status = match link {
             AgentLink::Connecting => {
-                window.set_window_title(openlogi_core::brand::APP_NAME);
+                window.set_window_title(&crate::windows::product_title());
                 return root.child(status::connecting_body(cx)).into_any_element();
             }
             AgentLink::Unreachable => {
-                window.set_window_title(openlogi_core::brand::APP_NAME);
+                window.set_window_title(&crate::windows::product_title());
                 return root.child(status::unreachable_body(cx)).into_any_element();
             }
             AgentLink::OutdatedGui => {
-                window.set_window_title(openlogi_core::brand::APP_NAME);
+                window.set_window_title(&crate::windows::product_title());
                 return root.child(status::outdated_gui_body(cx)).into_any_element();
             }
             AgentLink::Ready(status) => status,
@@ -722,7 +722,7 @@ impl AppView {
 
         let granted = status.accessibility_granted;
         if !granted && !self.accessibility_dismissed {
-            window.set_window_title(openlogi_core::brand::APP_NAME);
+            window.set_window_title(&crate::windows::product_title());
             return root.child(Self::accessibility_gate(cx)).into_any_element();
         }
 

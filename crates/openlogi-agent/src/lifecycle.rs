@@ -187,6 +187,10 @@ impl Booted {
                         info!("uninstalled while dormant — exiting");
                         return None;
                     }
+                    ShutdownRequest::RelaunchQuit => {
+                        info!("client relaunch while dormant — exiting");
+                        return None;
+                    }
                     ShutdownRequest::Restart { path, retry } => {
                         info!(path = %path.display(), "executable changed while dormant — scheduling relaunch");
                         if let Err(error) = crate::binary_watch::schedule(&path) {
@@ -685,6 +689,9 @@ impl Running {
             // event tap and firmware diversions go with us (#807, #1097).
             ShutdownRequest::Uninstalled => {
                 self.shut_down("the app was uninstalled", None).await;
+            }
+            ShutdownRequest::RelaunchQuit => {
+                self.shut_down("a client is relaunching", None).await;
             }
             ShutdownRequest::Restart { path, retry } => {
                 // A replacement ends the ring session as an exit does, and

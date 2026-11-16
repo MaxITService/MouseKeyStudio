@@ -73,6 +73,8 @@ mod action_ring;
 #[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
+mod elevated_relaunch;
+#[cfg(windows)]
 pub(crate) use autostart::SetupStatus as AutostartSetupStatus;
 mod agent;
 mod backlight;
@@ -210,6 +212,8 @@ pub struct AppState {
     ipc_commands: mpsc::UnboundedSender<crate::services::ipc::Command>,
     #[cfg(windows)]
     autostart_setup: autostart::SetupStatus,
+    #[cfg(windows)]
+    elevated_relaunch: autostart::SetupStatus,
     /// Camera-consent poll started by an in-app macOS prompt. The app-state
     /// entity owns it because permission can resolve after the initiating view
     /// or window closes; dropping the entity at process shutdown cancels it.
@@ -321,6 +325,8 @@ impl AppState {
             ipc_commands,
             #[cfg(windows)]
             autostart_setup: autostart::SetupStatus::Idle,
+            #[cfg(windows)]
+            elevated_relaunch: autostart::SetupStatus::Idle,
             #[cfg(target_os = "macos")]
             camera_permission_poll: None,
         };

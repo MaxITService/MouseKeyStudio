@@ -58,7 +58,9 @@ pub(super) fn general_page(
     };
     let group = group.item(launch_at_login_item());
     #[cfg(windows)]
-    let group = group.item(administrator_autostart_item());
+    let group = group
+        .item(administrator_autostart_item())
+        .item(elevated_relaunch_item());
 
     // Switched off under System Settings › Login Items: nothing can start
     // the service until the user flips it back on there — surface it instead
@@ -343,6 +345,45 @@ fn administrator_autostart_item() -> SettingItem {
         }),
     )
     .description(tr!("app.autostart_as_admin_description"))
+}
+
+/// "Restart as administrator now": offered only while this GUI runs without
+/// administrator rights; the description says why it is unavailable otherwise.
+#[cfg(windows)]
+fn elevated_relaunch_item() -> SettingItem {
+    let elevated = crate::platform::elevation::is_elevated();
+    SettingItem::new(
+        tr!("app.restart_as_admin"),
+        SettingField::render(|_, _, cx| {
+            use crate::state::AutostartSetupStatus;
+            use gpui_component::Disableable as _;
+            let state = AppState::try_read(cx);
+            let status = state.map(AppState::elevated_relaunch_status);
+            let message = match status {
+                Some(AutostartSetupStatus::Pending) => Some(tr!("app.restart_as_admin_pending")),
+                Some(AutostartSetupStatus::Failed) => Some(tr!("app.restart_as_admin_failed")),
+                _ => None,
+            };
+            v_flex()
+                .gap_2()
+                .items_end()
+                .child(
+                    crate::ui::components::control_button("restart-as-admin")
+                        .label(tr!("app.restart_as_admin_button"))
+                        .outline()
+                        .disabled(!state.is_some_and(AppState::can_relaunch_elevated))
+                        .on_click(|_, _, cx| AppState::request_elevated_relaunch(cx)),
+                )
+                .when_some(message, |field, message| {
+                    field.child(div().max_w_64().text_caption().child(message))
+                })
+        }),
+    )
+    .description(if elevated {
+        tr!("app.restart_as_admin_already")
+    } else {
+        tr!("app.restart_as_admin_description")
+    })
 }
 
 /// The `RequiresApproval` notice: with the direct-launch fallback gone, the

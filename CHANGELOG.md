@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.21] - 2026-11-16
+
+### Fixed
+
+- *(windows)* mouse buttons and shortcuts now work in windows of apps that run as administrator: Settings › General has a new "Restart as administrator now" action that relaunches the GUI and the agent elevated for the session (one UAC approval, no recurring prompts)
+
+### Added
+
+- *(ipc)* `Agent::quit_for_relaunch` so a relaunching GUI can hand the input hook to an elevated agent (protocol 44)
+- *(i18n)* strings for the administrator restart action in all locales
+
 ## [0.8.20] - 2026-11-01
 
 ### Added

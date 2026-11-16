@@ -5552,6 +5552,7 @@ dependencies = [
  "openlogi-hook",
  "openlogi-inject",
  "openlogi-ipc",
+ "openlogi-permissions",
  "rust-i18n",
  "serde_json",
  "succession",
@@ -5895,11 +5896,13 @@ dependencies = [
  "futures-lite",
  "interprocess",
  "openlogi-core",
+ "openlogi-permissions",
  "serde",
  "succession",
  "tarpc",
  "thiserror 2.0.18",
  "tokio",
+ "widestring",
 ]
 
 [[package]]
@@ -5937,6 +5940,7 @@ dependencies = [
  "openlogi-camera",
  "openlogi-core",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

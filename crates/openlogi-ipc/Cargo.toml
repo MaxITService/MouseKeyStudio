@@ -22,6 +22,12 @@ interprocess = { workspace = true }
 succession = { version = "0.2", features = ["serde"] }
 futures-lite = { workspace = true, optional = true }
 
+# The named pipes are opened to this account across the UAC boundary: the
+# account SID, and the wide string `interprocess` takes a descriptor as.
+[target.'cfg(windows)'.dependencies]
+openlogi-permissions = { path = "../openlogi-permissions" }
+widestring = "1"
+
 [lints]
 workspace = true
 

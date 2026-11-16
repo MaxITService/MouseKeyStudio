@@ -30,6 +30,8 @@
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
@@ -68,6 +70,17 @@ pub use macos::{bluetooth, camera, input_monitoring, open_pane};
 
 #[cfg(target_os = "linux")]
 pub use linux::input_device_access;
+
+#[cfg(target_os = "windows")]
+pub use windows::{current_user_sid, is_elevated};
+
+/// Whether this process runs with administrator rights. Only Windows reports
+/// it; elsewhere the answer is always `false`.
+#[cfg(not(target_os = "windows"))]
+#[must_use]
+pub fn is_elevated() -> bool {
+    false
+}
 
 /// No-op: Linux has no pane to open — the udev-rules guide is shown inline in
 /// the Settings window instead.

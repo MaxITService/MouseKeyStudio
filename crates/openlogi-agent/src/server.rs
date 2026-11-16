@@ -347,6 +347,15 @@ impl Agent for AgentServer {
             .await
     }
 
+    async fn quit_for_relaunch(self, _: Context) {
+        info!("a client is relaunching — leaving gracefully");
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        crate::overlay::evict_on_quit();
+        if !crate::shutdown::request_relaunch_quit() {
+            warn!("the lifecycle no longer takes shutdown requests — not quitting");
+        }
+    }
+
     async fn request_accessibility_prompt(self, _: Context) {
         Hook::prompt_accessibility();
     }

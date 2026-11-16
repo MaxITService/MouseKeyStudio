@@ -63,6 +63,7 @@ openlogi-inject = { path = "../openlogi-inject" }
 zbus = "5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+openlogi-permissions = { path = "../openlogi-permissions" }
 winreg = "0.55"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

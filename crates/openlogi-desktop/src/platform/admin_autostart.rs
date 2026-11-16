@@ -16,13 +16,47 @@ pub(crate) enum Outcome {
     Cancelled,
 }
 
+/// The elevated logon task is named `{prefix}{account SID}-{profile}`; the
+/// setup script and [`start_agent`] both build it from here.
+const TASK_NAME_PREFIX: &str = "MouseKeyStudioAgent-Admin-";
+
+fn task_name_suffix() -> String {
+    format!("-{}", openlogi_core::paths::Profile::current().env_value())
+}
+
+fn task_name(sid: &str) -> String {
+    format!("{TASK_NAME_PREFIX}{sid}{}", task_name_suffix())
+}
+
+/// Start the agent through its elevated logon task. Running one's own task
+/// needs no UAC prompt, so this is how an unelevated GUI brings the agent back
+/// with the administrator rights the user authorized once. `false` when the
+/// task is absent or disabled, or Windows refuses — the caller then starts the
+/// agent directly.
+pub(crate) fn start_agent() -> bool {
+    use std::os::windows::process::CommandExt as _;
+
+    let Some(sid) = openlogi_permissions::current_user_sid() else {
+        return false;
+    };
+    let Some(system_root) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+    std::process::Command::new(std::path::Path::new(&system_root).join("System32/schtasks.exe"))
+        .args(["/Run", "/TN", &task_name(&sid)])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
 fn setup_script(exe: &Path, preferences: Preferences) -> Result<String, String> {
     let exe = exe.to_str().ok_or("agent path is not valid Unicode")?;
-    let profile = openlogi_core::paths::Profile::current().env_value();
     let operation = if preferences.administrator {
         format!(
             r"
@@ -46,7 +80,9 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Princi
         "if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $name -Confirm:$false }".to_owned()
     };
     Ok(format!(
-        "$ErrorActionPreference = 'Stop'; $name = 'MouseKeyStudioAgent-Admin-' + $user + '-{profile}'; try {{ {operation}; exit 0 }} catch {{ exit 1 }}"
+        "$ErrorActionPreference = 'Stop'; $name = {} + $user + {}; try {{ {operation}; exit 0 }} catch {{ exit 1 }}",
+        literal(TASK_NAME_PREFIX),
+        literal(&task_name_suffix()),
     ))
 }
 
@@ -79,7 +115,7 @@ try {{
     let status = std::process::Command::new(powershell)
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command"])
         .arg(wrapper)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW; UAC remains visible.
+        .creation_flags(CREATE_NO_WINDOW) // UAC remains visible.
         .status()
         .map_err(|error| error.to_string())?;
     match status.code() {
@@ -92,6 +128,29 @@ try {{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_setup_script_and_the_start_name_the_same_task() {
+        let script = setup_script(
+            Path::new(r"C:gent.exe"),
+            Preferences {
+                administrator: true,
+                at_login: true,
+            },
+        )
+        .expect("a Unicode path");
+        let suffix = task_name_suffix();
+        assert!(
+            script.contains(&format!(
+                "$name = 'MouseKeyStudioAgent-Admin-' + $user + '{suffix}';"
+            )),
+            "{script}"
+        );
+        assert_eq!(
+            task_name("S-1-5-21-1"),
+            format!("MouseKeyStudioAgent-Admin-S-1-5-21-1{suffix}")
+        );
+    }
 
     #[test]
     fn executable_paths_are_literal_even_with_apostrophes_and_powershell_syntax() {

@@ -79,6 +79,14 @@ pub(super) fn spawn_agent() {
             return;
         }
     }
+    // The user who authorized administrator autostart gets the agent back with
+    // those rights: a direct launch from an unelevated GUI would start it
+    // without them, and it would then miss every elevated window.
+    #[cfg(windows)]
+    if crate::platform::admin_autostart::start_agent() {
+        info!("agent not running — started its administrator logon task");
+        return;
+    }
     let Some(path) = agent_binary_path() else {
         warn!(
             "agent not reachable and its binary wasn't found next to the GUI — \
@@ -257,4 +265,54 @@ mod tests {
         // Killed by a signal: no exit code at all.
         assert_eq!(failed_kickstart(None), Kickstart::Unavailable);
     }
+}
+
+/// How long [`hand_off_agent`] waits for the agent to release firmware
+/// capture and close its socket.
+#[cfg(windows)]
+const HAND_OFF_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stop the agent for a successor GUI that starts its own — the elevated
+/// relaunch. Marks the suite as quitting first, so this GUI's reconnect loop
+/// cannot bring the old agent back, then asks the agent to leave gracefully
+/// and waits until its socket stops answering. Blocking; call it off the UI
+/// thread. `false` when the agent was still reachable at the deadline — the
+/// successor's own reconnect loop recovers either way.
+#[cfg(windows)]
+pub fn hand_off_agent() -> bool {
+    use openlogi_ipc::ClientKind;
+    use openlogi_ipc::client::{ConnectError, connect_as};
+
+    mark_suite_quitting();
+    let runtime = match openlogi_core::worker::runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            warn!(%error, "could not start the hand-off runtime");
+            return false;
+        }
+    };
+    runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + HAND_OFF_DEADLINE;
+        match connect_as(ClientKind::Gui).await {
+            Ok(client) => {
+                if let Err(error) = client.quit_for_relaunch(tarpc::context::current()).await {
+                    warn!(%error, "the agent did not accept the relaunch quit");
+                }
+            }
+            Err(ConnectError::Endpoint(_)) => return true,
+            Err(error) => warn!(%error, "could not reach the agent to hand it off"),
+        }
+        while tokio::time::Instant::now() < deadline {
+            if matches!(
+                connect_as(ClientKind::Cli).await,
+                Err(ConnectError::Endpoint(_))
+            ) {
+                info!("the agent left for the elevated relaunch");
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        warn!("the agent was still reachable at the hand-off deadline");
+        false
+    })
 }

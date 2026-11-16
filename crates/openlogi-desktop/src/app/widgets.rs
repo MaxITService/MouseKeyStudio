@@ -81,21 +81,18 @@ pub(super) fn add_device_button() -> impl IntoElement {
 
 pub(super) fn main_window_title(show_device: bool, cx: &Context<AppView>) -> SharedString {
     if !show_device {
-        return SharedString::from(openlogi_core::brand::APP_NAME);
+        return crate::windows::product_title();
     }
     AppState::try_global(cx)
         .map(|state| state.read(cx))
         .and_then(AppState::current_record)
-        .map_or_else(
-            || SharedString::from(openlogi_core::brand::APP_NAME),
-            |record| {
-                SharedString::from(format!(
-                    "{} - {}",
-                    openlogi_core::brand::APP_NAME,
-                    record.display_name
-                ))
-            },
-        )
+        .map_or_else(crate::windows::product_title, |record| {
+            SharedString::from(format!(
+                "{} - {}",
+                crate::windows::product_title(),
+                record.display_name
+            ))
+        })
 }
 
 pub(super) fn status_badge(online: bool, pal: Palette) -> impl IntoElement {

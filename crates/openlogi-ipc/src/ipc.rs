@@ -170,6 +170,7 @@ pub use succession::Identity;
 /// `AgentSnapshot::config_revision` appended, so a client sees a config edit
 /// the agent made itself (the Windows tray menu).
 /// `Action::RunPowerShellCommand` appended for explicit Windows shell selection.
+/// `Agent::quit_for_relaunch` appended — a graceful exit a relaunching GUI asks for.
 pub const PROTOCOL_VERSION: u32 = 44;
 
 /// Environment variable through which the agent hands a supervised helper the
@@ -981,4 +982,10 @@ pub trait Agent {
 
     /// Read a G-series mouse's onboard memory.
     async fn read_onboard(route: DeviceRoute) -> Result<OnboardState, WriteError>;
+
+    /// Leave gracefully so a relaunched client can start a successor — the
+    /// GUI restarting with administrator rights. The agent releases firmware
+    /// capture and the hook exactly as a tray Quit does, but leaves the GUI
+    /// running. Returns once the shutdown is scheduled, not once it is done.
+    async fn quit_for_relaunch();
 }

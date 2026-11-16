@@ -178,6 +178,10 @@ impl Agent for TestAgent {
         unreachable!("profile capture does not read onboard memory")
     }
 
+    async fn quit_for_relaunch(self, _: TarpcContext) {
+        unreachable!("profile capture never asks the agent to quit")
+    }
+
     async fn unpair_device(
         self,
         _: TarpcContext,

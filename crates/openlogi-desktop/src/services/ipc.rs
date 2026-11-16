@@ -61,6 +61,8 @@ mod link;
 mod reflex;
 mod request;
 
+#[cfg(windows)]
+pub use launch::hand_off_agent;
 pub use launch::mark_suite_quitting;
 use launch::spawn_agent;
 use link::Link;

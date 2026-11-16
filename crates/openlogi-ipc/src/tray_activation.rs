@@ -3,7 +3,6 @@
 
 use std::io;
 
-use interprocess::local_socket::ListenerOptions;
 use interprocess::local_socket::tokio::{Listener, prelude::*};
 
 fn endpoint() -> io::Result<interprocess::local_socket::Name<'static>> {
@@ -15,7 +14,7 @@ fn endpoint() -> io::Result<interprocess::local_socket::Name<'static>> {
 /// # Errors
 /// Returns an error if the named pipe cannot be created.
 pub fn bind() -> io::Result<Listener> {
-    ListenerOptions::new().name(endpoint()?).create_tokio()
+    crate::transport::listener_options(endpoint()?).create_tokio()
 }
 
 /// Wait for a tray activation request.

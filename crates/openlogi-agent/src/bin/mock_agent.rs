@@ -1170,6 +1170,10 @@ impl Agent for MockAgent {
         })
     }
 
+    async fn quit_for_relaunch(self, _: Context) {
+        info!("quit_for_relaunch — the mock keeps serving");
+    }
+
     async fn unpair_device(self, _: Context, route: DeviceRoute) -> Result<(), PairingFailure> {
         let result = self.state.lock().await.unpair(&route);
         info!(%route, ok = result.is_ok(), "unpair_device");

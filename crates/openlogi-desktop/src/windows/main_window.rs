@@ -44,7 +44,7 @@ fn window_options(cx: &mut App) -> WindowOptions {
         // Linux: transparent chrome so `AppView::render` can draw a client-side
         // `TitleBar` (the compositor declines server-side decorations and gpui's
         // fallback is unpainted). macOS/Windows keep their native titlebar.
-        titlebar: Some(titlebar_options(openlogi_core::brand::APP_NAME)),
+        titlebar: Some(titlebar_options(crate::windows::product_title())),
         ..WindowOptions::from(fit)
     }
 }
