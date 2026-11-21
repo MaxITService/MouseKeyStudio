@@ -22,7 +22,9 @@
 //!
 //! Everything runs on one dedicated thread: the hidden window, its message
 //! pump, and the menu. The icon is re-added when Explorer restarts (the
-//! `TaskbarCreated` broadcast), and the glyph tracks the taskbar theme
+//! `TaskbarCreated` broadcast, allowed through UIPI for an elevated agent)
+//! and retried on the tooltip timer whenever the shell does not hold it —
+//! e.g. an agent started at logon before the taskbar exists. The glyph tracks the taskbar theme
 //! (black on a light taskbar, white on a dark one) at install time.
 
 #![expect(
@@ -51,13 +53,14 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CW_USEDEFAULT, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyMenu, DispatchMessageW, EnumWindows, GetCursorPos, GetMessageW,
-    GetWindowThreadProcessId, HICON, HMENU, IDI_APPLICATION, IsIconic, IsWindowVisible,
-    LR_DEFAULTCOLOR, LoadIconW, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-    RegisterClassW, RegisterWindowMessageW, SW_RESTORE, SetForegroundWindow, SetTimer, ShowWindow,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP,
-    WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+    AppendMenuW, CW_USEDEFAULT, ChangeWindowMessageFilterEx, CreateIconFromResourceEx,
+    CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, EnumWindows,
+    GetCursorPos, GetMessageW, GetWindowThreadProcessId, HICON, HMENU, IDI_APPLICATION, IsIconic,
+    IsWindowVisible, LR_DEFAULTCOLOR, LoadIconW, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
+    MF_STRING, MSG, MSGFLT_ALLOW, RegisterClassW, RegisterWindowMessageW, SW_RESTORE,
+    SetForegroundWindow, SetTimer, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_APP, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 use crate::server::AgentServer;
@@ -77,6 +80,13 @@ const ID_DPI_FIRST: usize = 100;
 /// until then; real ids are never zero (`RegisterWindowMessageW` starts at
 /// 0xC000).
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the shell currently holds our icon. Cleared when `NIM_ADD` or a
+/// tooltip `NIM_MODIFY` fails, so the 2 s timer keeps re-adding it until the
+/// shell accepts it. That recovers the icon even when `TaskbarCreated` never
+/// arrives: an agent started at logon before Explorer has no taskbar to add
+/// to, and the broadcast that would announce one can be lost.
+static ICON_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 // The native thread reads the agent's existing published inventory; no HID or
 // config-file work is performed by the window callback.
@@ -237,13 +247,27 @@ fn run_tray_loop(shutdown_tx: ShutdownRequestSender) {
             warn!("tray window creation failed — no tray icon");
             return;
         }
-        TASKBAR_CREATED.store(
-            RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
-            Ordering::Relaxed,
-        );
-        add_tray_icon(hwnd);
+        let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
+        TASKBAR_CREATED.store(taskbar_created, Ordering::Relaxed);
+        // An elevated agent (the admin autostart task) runs above Explorer's
+        // integrity level, and UIPI drops Explorer's TaskbarCreated broadcast
+        // unless this window explicitly accepts it.
+        if taskbar_created != 0
+            && ChangeWindowMessageFilterEx(
+                hwnd,
+                taskbar_created,
+                MSGFLT_ALLOW,
+                std::ptr::null_mut(),
+            ) == 0
+        {
+            warn!("could not allow TaskbarCreated through UIPI; relying on the retry timer");
+        }
+        if add_tray_icon(hwnd) {
+            info!("tray icon installed");
+        } else {
+            warn!("Shell_NotifyIconW(NIM_ADD) failed — retrying until the taskbar is available");
+        }
         SetTimer(hwnd, 1, 2000, None);
-        info!("tray icon installed");
 
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -266,8 +290,19 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_TIMER if wparam == 1 => {
-            // SAFETY: the timer belongs to this tray window and runs on its thread.
-            unsafe { update_tooltip(hwnd) };
+            // SAFETY: the timer belongs to this tray window and runs on its
+            // thread, the one that created `hwnd`.
+            unsafe {
+                if !ICON_INSTALLED.load(Ordering::Relaxed) {
+                    if add_tray_icon(hwnd) {
+                        info!("tray icon installed after retry");
+                    }
+                } else if !update_tooltip(hwnd) {
+                    // The shell lost our icon (Explorer restarted and the
+                    // broadcast never reached us); re-add on the next tick.
+                    ICON_INSTALLED.store(false, Ordering::Relaxed);
+                }
+            }
             0
         }
         WM_TRAY => {
@@ -287,7 +322,9 @@ unsafe extern "system" fn wnd_proc(
             // SAFETY: `hwnd` is our own window, still live while its window
             // procedure runs, and this is the thread that created it — the
             // same conditions under which `run_tray_loop` first added the icon.
-            unsafe { add_tray_icon(hwnd) };
+            if unsafe { add_tray_icon(hwnd) } {
+                info!("tray icon re-added after Explorer restart");
+            }
             0
         }
         // SAFETY: handing the system back the message it just delivered,
@@ -298,15 +335,15 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// Install the icon (idempotent enough for the re-add path: a duplicate
-/// `NIM_ADD` fails silently and the existing icon stays).
+/// Install the icon and record whether the shell now holds it. A duplicate
+/// `NIM_ADD` for an icon the shell already has also counts as installed.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "NOTIFYICONDATAW is a few hundred bytes"
 )]
-unsafe fn add_tray_icon(hwnd: HWND) {
+unsafe fn add_tray_icon(hwnd: HWND) -> bool {
     // SAFETY: `nid` is fully initialized below; the tip buffer is bounded.
-    unsafe {
+    let installed = unsafe {
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
@@ -315,10 +352,11 @@ unsafe fn add_tray_icon(hwnd: HWND) {
         nid.uCallbackMessage = WM_TRAY;
         nid.hIcon = tray_icon();
         nid.szTip = tooltip_buffer(&current_tooltip());
-        if Shell_NotifyIconW(NIM_ADD, &raw const nid) == 0 {
-            warn!("Shell_NotifyIconW(NIM_ADD) failed — no tray icon");
-        }
-    }
+        Shell_NotifyIconW(NIM_ADD, &raw const nid) != 0
+            || Shell_NotifyIconW(NIM_MODIFY, &raw const nid) != 0
+    };
+    ICON_INSTALLED.store(installed, Ordering::Relaxed);
+    installed
 }
 
 /// Whether the agent runs with administrator rights — fixed for the process
@@ -400,7 +438,8 @@ fn tooltip_buffer(text: &str) -> [u16; 128] {
     clippy::cast_possible_truncation,
     reason = "NOTIFYICONDATAW is a few hundred bytes"
 )]
-unsafe fn update_tooltip(hwnd: HWND) {
+/// Refresh the tooltip; `false` means the shell no longer holds our icon.
+unsafe fn update_tooltip(hwnd: HWND) -> bool {
     // SAFETY: fully initialized notification data for the live tray window;
     // the fixed buffer is NUL terminated and Shell copies it synchronously.
     unsafe {
@@ -410,7 +449,7 @@ unsafe fn update_tooltip(hwnd: HWND) {
         nid.uID = 1;
         nid.uFlags = NIF_TIP;
         nid.szTip = tooltip_buffer(&current_tooltip());
-        Shell_NotifyIconW(NIM_MODIFY, &raw const nid);
+        Shell_NotifyIconW(NIM_MODIFY, &raw const nid) != 0
     }
 }
 
