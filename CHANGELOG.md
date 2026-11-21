@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.22] - 2026-11-21
+
+### Fixed
+
+- *(windows)* the tray icon no longer goes missing when the agent starts as administrator at logon before the taskbar exists: the agent now accepts Explorer's `TaskbarCreated` broadcast across the elevation boundary and keeps retrying the icon until the shell takes it, which also restores it after an Explorer restart
+
 ## [0.8.21] - 2026-11-16
 
 ### Fixed
